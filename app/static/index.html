@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Remote Project Manager</title>
+    <link rel="icon" type="image/png" href="/static/rpm-icon.png" />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="top">
+        <div class="brand">
+          <a
+            class="brand-mark"
+            href="https://github.com/drachul/remote-project-manager"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Remote Project Manager GitHub"
+          >
+            <img src="/static/rpm-logo.png" alt="Remote Project Manager logo" />
+          </a>
+          <div>
+            <h1>Remote Project Manager</h1>
+            <p>Operate remote Docker Compose projects with a single control plane.</p>
+          </div>
+        </div>
+        <div class="controls">
+          <button class="btn subtle" id="openConfig">Configuration</button>
+          <button class="btn ghost" id="logoutBtn">Log out</button>
+        </div>
+      </header>
+
+      <section class="panel-grid">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Hosts</h2>
+              <div class="panel-sub">Select hosts to filter the project list.</div>
+            </div>
+            <div class="panel-actions">
+              <button class="btn subtle" id="selectAllHosts">Select all</button>
+              <button class="btn subtle" id="clearHosts">Clear</button>
+            </div>
+          </div>
+          <ul class="list" id="hostList">
+            <li class="list-row empty">Loading hosts...</li>
+          </ul>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Projects</h2>
+              <div class="panel-sub" id="projectCount">0 projects</div>
+            </div>
+            <div class="panel-actions">
+              <button class="btn subtle" id="openBackupSchedule">Backup schedule</button>
+              <button class="btn subtle" id="openCreateProject">Create</button>
+              <button class="btn subtle" id="selectAllProjects">Select all</button>
+              <button class="btn subtle" id="clearProjects">Clear</button>
+            </div>
+          </div>
+          <div class="bulk-actions hidden" id="bulkActions">
+            <button class="btn ghost bulk-action" data-bulk-action="start">Start</button>
+            <button class="btn ghost bulk-action" data-bulk-action="stop">Stop</button>
+            <button class="btn ghost bulk-action" data-bulk-action="restart">Restart</button>
+            <button class="btn ghost bulk-action" data-bulk-action="update">Update</button>
+            <button class="btn ghost bulk-action" data-bulk-action="backup">Backup</button>
+          </div>
+          <div class="progress hidden" id="bulkProgress">
+            <div class="progress-text" id="bulkProgressText">Updating 0/0</div>
+            <div class="progress-track">
+              <div class="progress-bar" id="bulkProgressBar"></div>
+            </div>
+          </div>
+          <ul class="list" id="projectList">
+            <li class="list-row empty">Select a host to see projects.</li>
+          </ul>
+        </div>
+      </section>
+    </div>
+
+    <div class="toast-container" id="toastContainer" aria-live="polite" aria-atomic="true"></div>
+
+    <div class="modal hidden" id="authModal">
+      <div class="modal-backdrop"></div>
+      <div class="modal-card auth-modal-card">
+        <header class="modal-header">
+          <div>
+            <div class="modal-title">Sign in</div>
+            <div class="modal-subtitle">Enter your credentials to continue.</div>
+          </div>
+        </header>
+        <div class="modal-body auth-body">
+          <label class="control">
+            Username
+            <input type="text" id="authUsername" autocomplete="username" />
+          </label>
+          <label class="control">
+            Password
+            <input type="password" id="authPassword" autocomplete="current-password" />
+          </label>
+          <div class="schedule-actions">
+            <button class="btn primary" id="authSubmit">Sign in</button>
+          </div>
+          <div class="config-status" id="authStatus"></div>
+        </div>
+      </div>
+    </div>
+
+    <template id="hostRowTemplate">
+      <li class="list-row">
+        <label class="checkbox">
+          <input class="host-checkbox" type="checkbox" />
+          <span class="checkbox-label">
+            <span class="row-title host-name"></span>
+            <span class="row-subtitle host-meta"></span>
+          </span>
+        </label>
+        <div class="row-actions">
+          <button class="btn subtle host-action action-ready sleep-host" aria-label="Sleep host" title="Sleep host">
+            <span class="material-symbols-outlined action-icon">bedtime</span>
+          </button>
+          <button class="btn subtle host-action action-ready wake-host" aria-label="Wake host" title="Wake host">
+            <span class="material-symbols-outlined action-icon">light_mode</span>
+          </button>
+          <button class="btn subtle host-action action-ready refresh-host" aria-label="Refresh project statuses" title="Refresh project statuses">
+            <span class="material-symbols-outlined action-icon">refresh</span>
+          </button>
+          <button class="btn subtle host-action action-ready scan-host" aria-label="Scan projects" title="Scan projects">
+            <span class="material-symbols-outlined action-icon">scan</span>
+          </button>
+        </div>
+      </li>
+    </template>
+
+    <template id="projectRowTemplate">
+      <li class="list-row project-row">
+        <label class="checkbox">
+          <input class="project-checkbox" type="checkbox" />
+          <span class="checkbox-label">
+          <span class="row-title">
+            <span class="project-name"></span>
+            <span class="icon-badges">
+              <span class="material-symbols-outlined status-icon" title="Status"></span>
+              <span class="material-symbols-outlined updates-icon" title="Updates"></span>
+              <span class="material-symbols-outlined sleep-icon" title="Sleeping"></span>
+            </span>
+            <label class="toggle backup-toggle">
+              <input class="backup-checkbox" type="checkbox" />
+              <span>Backup?</span>
+            </label>
+            <button class="btn ghost project-delete" title="Delete project" aria-label="Delete project">
+              <span class="material-symbols-outlined action-icon delete-icon">delete</span>
+            </button>
+          </span>
+            <span class="row-subtitle project-meta">
+              <span class="project-meta-text"></span>
+              <span class="backup-meta">Last Backup: never</span>
+              <span class="state-meta">State updated: never</span>
+            </span>
+          </span>
+        </label>
+        <div class="row-meta">
+          <span class="badge status hidden">unknown</span>
+          <span class="badge updates hidden">updates: n/a</span>
+          <span class="badge cancelled hidden">cancelled</span>
+        </div>
+        <div class="row-actions">
+          <button class="btn ghost project-action" data-action="start" aria-label="Start" title="Start">
+            <span class="material-symbols-outlined action-icon action-label">play_arrow</span>
+          </button>
+          <button class="btn ghost project-action" data-action="stop" aria-label="Stop" title="Stop">
+            <span class="material-symbols-outlined action-icon action-label">stop</span>
+          </button>
+          <button class="btn ghost project-action" data-action="restart" aria-label="Restart" title="Restart">
+            <span class="material-symbols-outlined action-icon action-label">replay</span>
+          </button>
+          <button class="btn ghost project-action" data-action="update" aria-label="Update" title="Update">
+            <span class="material-symbols-outlined action-icon action-label">system_update_alt</span>
+          </button>
+          <button class="btn ghost project-action" data-action="backup" aria-label="Backup" title="Backup">
+            <span class="material-symbols-outlined action-icon action-label">backup</span>
+          </button>
+          <button class="btn ghost project-action" data-action="refresh" aria-label="Refresh" title="Refresh">
+            <span class="material-symbols-outlined action-icon action-label">refresh</span>
+          </button>
+          <button class="btn ghost logs" aria-label="Logs" title="Logs">
+            <span class="material-symbols-outlined action-icon">article</span>
+          </button>
+          <button class="btn ghost compose" aria-label="Compose" title="Compose">
+            <span class="material-symbols-outlined action-icon">edit_document</span>
+          </button>
+        </div>
+        <div class="project-extra">
+          <div class="services-summary">
+            <span class="services-text"></span>
+            <span class="material-symbols-outlined services-caret">expand_more</span>
+          </div>
+          <div class="errors"></div>
+          <div class="services-panel hidden">
+            <div class="services-header">
+              <span>Services</span>
+              <span class="services-count"></span>
+            </div>
+            <ul class="services-list"></ul>
+          </div>
+        </div>
+      </li>
+    </template>
+
+    <template id="hostConfigTemplate">
+      <div class="config-entry">
+        <div class="config-entry-head">
+          <div>
+            <div class="config-entry-title">Host</div>
+            <div class="config-entry-sub">SSH target for compose projects.</div>
+          </div>
+          <div class="config-entry-actions">
+            <button class="btn subtle config-save">Save</button>
+            <button class="btn ghost config-delete">Delete</button>
+          </div>
+        </div>
+        <div class="config-grid">
+          <label class="control">
+            ID
+            <input type="text" class="host-id" placeholder="primary" />
+          </label>
+          <label class="control">
+            Project root
+            <input type="text" class="host-root" placeholder="/opt/compose" />
+          </label>
+          <label class="control">
+            SSH address
+            <input type="text" class="host-address" placeholder="example.com" />
+          </label>
+          <label class="control">
+            SSH username
+            <input type="text" class="host-user" placeholder="deploy" />
+          </label>
+          <label class="control">
+            SSH port
+            <input type="number" min="1" max="65535" class="host-port" value="22" />
+          </label>
+          <label class="control span-2">
+            SSH private key
+            <textarea class="host-key" rows="5" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+          </label>
+        </div>
+      </div>
+    </template>
+
+    <template id="backupConfigTemplate">
+      <div class="config-entry">
+        <div class="config-entry-head">
+          <div>
+            <div class="config-entry-title">Backup target</div>
+            <div class="config-entry-sub">Where rsync backups are sent.</div>
+          </div>
+          <div class="config-entry-actions">
+            <button class="btn subtle config-save">Save</button>
+            <button class="btn ghost config-delete">Delete</button>
+          </div>
+        </div>
+        <div class="config-grid">
+          <label class="control">
+            ID
+            <input type="text" class="backup-id" placeholder="default" />
+          </label>
+          <label class="control">
+            Address
+            <input type="text" class="backup-address" placeholder="backup.example.com" />
+          </label>
+          <label class="control">
+            Username
+            <input type="text" class="backup-username" placeholder="backup" />
+          </label>
+          <label class="control">
+            Password
+            <input type="password" class="backup-password" placeholder="••••••" />
+          </label>
+          <label class="control">
+            Protocol
+            <select class="backup-protocol">
+              <option value="ssh">ssh</option>
+              <option value="rsync">rsync</option>
+            </select>
+          </label>
+          <label class="control">
+            Port
+            <input type="number" min="1" max="65535" class="backup-port" value="22" />
+          </label>
+          <label class="control span-2">
+            Base path
+            <input type="text" class="backup-base-path" placeholder="/backups/compose" />
+          </label>
+        </div>
+      </div>
+    </template>
+
+    <template id="userConfigTemplate">
+      <div class="config-entry">
+        <div class="config-entry-head">
+          <div>
+            <div class="config-entry-title">User</div>
+            <div class="config-entry-sub user-last-login">Last login: never</div>
+          </div>
+          <div class="config-entry-actions">
+            <button class="btn subtle config-save">Save</button>
+            <button class="btn ghost config-delete">Delete</button>
+          </div>
+        </div>
+        <div class="config-grid">
+          <label class="control">
+            Username
+            <input type="text" class="user-name" placeholder="admin" />
+          </label>
+          <label class="control">
+            Password
+            <input type="password" class="user-password" placeholder="Set a new password" />
+          </label>
+        </div>
+      </div>
+    </template>
+
+    <div class="modal hidden" id="composeModal">
+      <div class="modal-backdrop"></div>
+      <div class="modal-card">
+        <header class="modal-header">
+          <div>
+            <div class="modal-title">Compose editor</div>
+            <div class="modal-subtitle" id="composeTarget"></div>
+          </div>
+          <button class="btn subtle" id="closeComposeModal">Close</button>
+        </header>
+        <div class="compose-panel">
+          <div class="compose-header">
+            <div class="compose-path" id="composePath"></div>
+            <div class="compose-actions">
+              <button class="btn subtle" id="previewCompose">Review diff</button>
+              <button class="btn subtle hidden" id="confirmCompose">Confirm save</button>
+            </div>
+          </div>
+          <div class="compose-editor-wrap">
+            <textarea class="compose-editor" id="composeEditor" spellcheck="false"></textarea>
+          </div>
+          <div class="compose-status" id="composeStatus"></div>
+          <pre class="compose-lint hidden" id="composeLint"></pre>
+          <div class="diff-panel hidden" id="diffPanel">
+            <div class="diff-header">Diff preview</div>
+            <pre class="diff-content" id="diffContent"></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal hidden" id="logsModal">
+      <div class="modal-backdrop"></div>
+      <div class="modal-card">
+        <header class="modal-header">
+          <div>
+            <div class="modal-title">Logs</div>
+            <div class="modal-subtitle" id="logsTarget"></div>
+          </div>
+          <button class="btn subtle" id="closeLogsModal">Close</button>
+        </header>
+        <div class="logs-controls">
+          <label class="control">
+            Service
+            <input id="logsService" type="text" placeholder="optional" />
+          </label>
+          <label class="control">
+            Tail
+            <input id="logsTail" type="number" min="1" max="5000" value="200" />
+          </label>
+          <label class="toggle">
+            <input id="logsShowStdout" type="checkbox" checked />
+            <span>Stdout</span>
+          </label>
+          <label class="toggle">
+            <input id="logsShowStderr" type="checkbox" checked />
+            <span>Stderr</span>
+          </label>
+          <button class="btn subtle" id="refreshLogs">Refresh</button>
+          <button class="btn subtle" id="toggleFollow">Follow</button>
+        </div>
+        <div class="logs-panel">
+          <pre class="logs-content" id="logsContent"></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal hidden" id="backupScheduleModal">
+      <div class="modal-backdrop"></div>
+      <div class="modal-card">
+        <header class="modal-header">
+          <div>
+            <div class="modal-title">Backup schedule</div>
+            <div class="modal-subtitle">Configure when scheduled backups run (local time).</div>
+          </div>
+          <button class="btn subtle" id="closeBackupScheduleModal">Close</button>
+        </header>
+        <div class="modal-body">
+          <div class="schedule-body">
+            <div class="schedule-field">
+              <label for="scheduleScope">Schedule for</label>
+              <select id="scheduleScope"></select>
+              <div class="field-hint" id="scheduleScopeHint"></div>
+            </div>
+            <label class="toggle schedule-enable">
+              <input type="checkbox" id="scheduleEnabled" />
+              <span id="scheduleEnabledLabel">Enable scheduled backups</span>
+            </label>
+
+            <div class="schedule-grid">
+              <div class="schedule-field">
+                <label for="scheduleTime">Time (local)</label>
+                <input id="scheduleTime" type="time" step="60" />
+              </div>
+
+              <div class="schedule-field">
+                <span class="field-label">Days of week</span>
+                <div class="schedule-days" id="scheduleDaysOfWeek">
+                  <label class="schedule-day">
+                    <input type="checkbox" value="1" />
+                    <span>Mon</span>
+                  </label>
+                  <label class="schedule-day">
+                    <input type="checkbox" value="2" />
+                    <span>Tue</span>
+                  </label>
+                  <label class="schedule-day">
+                    <input type="checkbox" value="3" />
+                    <span>Wed</span>
+                  </label>
+                  <label class="schedule-day">
+                    <input type="checkbox" value="4" />
+                    <span>Thu</span>
+                  </label>
+                  <label class="schedule-day">
+                    <input type="checkbox" value="5" />
+                    <span>Fri</span>
+                  </label>
+                  <label class="schedule-day">
+                    <input type="checkbox" value="6" />
+                    <span>Sat</span>
+                  </label>
+                  <label class="schedule-day">
+                    <input type="checkbox" value="0" />
+                    <span>Sun</span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="schedule-field">
+                <label for="scheduleDaysOfMonth">Days of month</label>
+                <select id="scheduleDaysOfMonth" multiple size="6"></select>
+                <div class="field-hint">Leave empty for any day.</div>
+              </div>
+
+              <div class="schedule-field">
+                <label for="scheduleMonths">Months</label>
+                <select id="scheduleMonths" multiple size="6"></select>
+                <div class="field-hint">Leave empty for any month.</div>
+              </div>
+            </div>
+
+            <div class="schedule-field">
+              <label for="cronExpression">Cron expression</label>
+              <input id="cronExpression" type="text" />
+              <label class="toggle schedule-custom">
+                <input type="checkbox" id="customCron" />
+                <span>Use custom cron</span>
+              </label>
+            </div>
+
+            <div class="schedule-info">
+              <span>Last run: <strong id="scheduleLast">never</strong></span>
+              <span>Next run: <strong id="scheduleNext">unknown</strong></span>
+            </div>
+
+            <div class="schedule-actions">
+              <button class="btn primary" id="saveSchedule">Save schedule</button>
+              <button class="btn subtle" id="refreshSchedule">Refresh</button>
+            </div>
+
+            <div class="schedule-status" id="scheduleStatus"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal hidden" id="configModal">
+      <div class="modal-backdrop"></div>
+      <div class="modal-card config-modal-card">
+        <header class="modal-header">
+          <div>
+            <div class="modal-title">Configuration</div>
+            <div class="modal-subtitle">Manage hosts and backup targets stored in the database.</div>
+          </div>
+          <button class="btn subtle" id="closeConfigModal">Close</button>
+        </header>
+        <div class="modal-body config-body">
+          <div class="config-tabs">
+            <button class="config-tab active" data-tab="hosts">Hosts</button>
+            <button class="config-tab" data-tab="users">Users</button>
+            <button class="config-tab" data-tab="backups">Backups</button>
+            <button class="config-tab" data-tab="misc">Misc</button>
+          </div>
+          <div class="config-tab-panel active" data-tab-panel="hosts">
+            <section class="config-section">
+              <div class="config-section-head">
+                <div>
+                  <div class="config-section-title">Hosts</div>
+                  <div class="config-section-sub">Configure each SSH host the service will manage.</div>
+                </div>
+                <button class="btn subtle" id="addHostConfig">Add host</button>
+              </div>
+              <div class="config-list" id="hostConfigList"></div>
+            </section>
+          </div>
+          <div class="config-tab-panel" data-tab-panel="users">
+            <section class="config-section">
+              <div class="config-section-head">
+                <div>
+                  <div class="config-section-title">Users</div>
+                  <div class="config-section-sub">Manage local accounts for sign-in.</div>
+                </div>
+                <button class="btn subtle" id="addUserConfig">Add user</button>
+              </div>
+              <div class="config-list" id="userConfigList"></div>
+            </section>
+          </div>
+          <div class="config-tab-panel" data-tab-panel="backups">
+            <section class="config-section">
+              <div class="config-section-head">
+                <div>
+                  <div class="config-section-title">Backups</div>
+                  <div class="config-section-sub">Configure backup destinations for rsync jobs. The first entry is used.</div>
+                </div>
+                <button class="btn subtle" id="addBackupConfig">Add backup</button>
+              </div>
+              <div class="config-list" id="backupConfigList"></div>
+            </section>
+          </div>
+          <div class="config-tab-panel" data-tab-panel="misc">
+            <section class="config-section">
+              <div class="config-section-head">
+                <div>
+                  <div class="config-section-title">Misc</div>
+                  <div class="config-section-sub">Intervals and authentication settings.</div>
+                </div>
+                <button class="btn subtle" id="saveIntervals">Save changes</button>
+              </div>
+              <div class="config-grid">
+                <label class="control">
+                  State refresh
+                  <input type="number" min="0" id="intervalStateSeconds" />
+                </label>
+                <label class="control" id="updateIntervalGroup">
+                  Update check
+                  <input type="number" min="0" id="intervalUpdateSeconds" />
+                </label>
+                <label class="control">
+                  Token expiry (seconds)
+                  <input type="number" min="30" id="tokenExpirySeconds" />
+                </label>
+              </div>
+              <div class="field-hint">Set intervals to 0 to disable automatic refresh.</div>
+            </section>
+          </div>
+          <div class="config-status" id="configStatus"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal hidden" id="createProjectModal">
+      <div class="modal-backdrop"></div>
+      <div class="modal-card">
+        <header class="modal-header">
+          <div>
+            <div class="modal-title">Create project</div>
+            <div class="modal-subtitle">Provision a new compose project on a host.</div>
+          </div>
+          <button class="btn subtle" id="closeCreateProjectModal">Close</button>
+        </header>
+        <div class="modal-body">
+          <div class="config-grid">
+            <label class="control">
+              Host
+              <select id="createProjectHost"></select>
+            </label>
+            <label class="control">
+              Project name
+              <input type="text" id="createProjectName" placeholder="my-app" />
+            </label>
+            <label class="toggle" id="createProjectBackupToggle">
+              <input type="checkbox" id="createProjectBackup" />
+              <span>Enable backup?</span>
+            </label>
+          </div>
+          <div class="create-run">
+            <label class="control">
+              Docker run command
+              <input type="text" id="createProjectRun" placeholder="docker run ..." />
+            </label>
+            <button class="btn subtle" id="convertRunToCompose">Convert</button>
+          </div>
+          <div class="field-hint create-run-hint">
+            Optional: paste a docker run command to convert to compose.
+          </div>
+          <label class="control">
+            Compose file
+            <textarea id="createProjectCompose" rows="10" placeholder="version: '3.9'"></textarea>
+          </label>
+          <div class="progress create-progress">
+            <div class="progress-text" id="createProjectProgressText">Awaiting input</div>
+            <div class="progress-track">
+              <div class="progress-bar" id="createProjectProgressBar"></div>
+            </div>
+          </div>
+          <div class="config-status" id="createProjectStatus"></div>
+          <div class="schedule-actions">
+            <button class="btn primary" id="createProjectSubmit">Create</button>
+            <button class="btn subtle" id="createProjectCancel">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal hidden" id="deleteProjectModal">
+      <div class="modal-backdrop"></div>
+      <div class="modal-card confirm-modal-card">
+        <header class="modal-header">
+          <div>
+            <div class="modal-title">Delete project</div>
+            <div class="modal-subtitle" id="deleteProjectTarget"></div>
+          </div>
+          <button class="btn subtle" id="closeDeleteProjectModal">Close</button>
+        </header>
+        <div class="modal-body confirm-body">
+          <div class="confirm-text">Delete this project?</div>
+          <div class="confirm-warning">
+            This removes the project directory and all files from the host.
+          </div>
+          <div class="schedule-actions">
+            <button class="btn danger" id="confirmDeleteProject">Yes, delete</button>
+          </div>
+          <div class="config-status" id="deleteProjectStatus"></div>
+        </div>
+      </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
