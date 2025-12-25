@@ -175,6 +175,7 @@ def docker_run_to_compose(command: str, service_name: Optional[str] = None) -> T
     env_files: List[str] = []
     volumes: List[str] = []
     labels: Dict[str, str] = {}
+    log_options: Dict[str, str] = {}
     extra_hosts: List[str] = []
     devices: List[str] = []
     dns: List[str] = []
@@ -331,6 +332,15 @@ def docker_run_to_compose(command: str, service_name: Optional[str] = None) -> T
                     labels[value] = ""
                 index += consumed
                 continue
+            value, consumed = _consume_value(tokens, index, "--log-opt")
+            if consumed:
+                if "=" in value:
+                    key, val = value.split("=", 1)
+                    log_options[key] = val
+                else:
+                    log_options[value] = ""
+                index += consumed
+                continue
             value, consumed = _consume_value(tokens, index, "--add-host")
             if consumed:
                 extra_hosts.append(value)
@@ -447,6 +457,11 @@ def docker_run_to_compose(command: str, service_name: Optional[str] = None) -> T
                 for device_id in device_ids:
                     lines.append(f"                - {_yaml_quote(str(device_id))}")
     _append_yaml_mapping(lines, "labels", labels)
+    if log_options:
+        lines.append("    logging:")
+        lines.append("      options:")
+        for key, val in log_options.items():
+            lines.append(f"        {_yaml_key(key)}: {_yaml_quote(val)}")
     if hostname:
         lines.append(f"    hostname: {_yaml_quote(hostname)}")
     if user:

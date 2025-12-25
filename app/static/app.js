@@ -104,6 +104,7 @@ const state = {
   stateIntervalSeconds: null,
   backupScheduleAvailable: true,
   updatesEnabled: true,
+  backupTargetsAvailable: true,
   authToken: null,
   initialized: false,
   configTabsInit: false,
@@ -113,6 +114,7 @@ const state = {
   actionProgress: new Map(),
   hostActionProgress: new Map(),
   serviceActionProgress: new Map(),
+  authExpiredNotified: false,
 };
 
 const composeState = {
@@ -128,6 +130,7 @@ const logsState = {
 
 const scheduleState = {
   initialized: false,
+  lastLoadFailed: false,
 };
 
 const deleteProjectState = {
@@ -171,7 +174,18 @@ async function apiRequest(path, options = {}) {
   }
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || response.statusText);
+    let message = text || response.statusText;
+    if (text) {
+      try {
+        const payload = JSON.parse(text);
+        if (payload && payload.detail) {
+          message = payload.detail;
+        }
+      } catch (err) {
+        message = text || response.statusText;
+      }
+    }
+    throw new Error(message);
   }
   return response;
 }
@@ -410,6 +424,44 @@ function tokenExpired(payload) {
   return expiration.getTime() <= Date.now();
 }
 
+let authExpiryTimeout = null;
+
+function clearAuthExpiryTimeout() {
+  if (authExpiryTimeout) {
+    window.clearTimeout(authExpiryTimeout);
+    authExpiryTimeout = null;
+  }
+}
+
+function scheduleAuthExpiry(payload) {
+  clearAuthExpiryTimeout();
+  if (!payload || !payload.expiration) {
+    return;
+  }
+  const expiresAt = new Date(payload.expiration).getTime();
+  if (Number.isNaN(expiresAt)) {
+    return;
+  }
+  const delay = Math.max(0, expiresAt - Date.now());
+  if (delay === 0) {
+    handleAuthExpired();
+    return;
+  }
+  authExpiryTimeout = window.setTimeout(() => {
+    handleAuthExpired();
+  }, delay);
+}
+
+function handleAuthExpired() {
+  if (state.authExpiredNotified) {
+    clearAuthToken();
+    return;
+  }
+  state.authExpiredNotified = true;
+  clearAuthToken();
+  showAuthModal("Session expired. Please sign in.");
+}
+
 function setAuthToken(token) {
   const payload = decodeToken(token);
   if (!payload || tokenExpired(payload)) {
@@ -417,12 +469,15 @@ function setAuthToken(token) {
     return;
   }
   state.authToken = token;
+  state.authExpiredNotified = false;
   const expiresAt = new Date(payload.expiration);
   setCookieValue(AUTH_COOKIE_NAME, token, expiresAt);
+  scheduleAuthExpiry(payload);
 }
 
 function clearAuthToken() {
   state.authToken = null;
+  clearAuthExpiryTimeout();
   clearCookieValue(AUTH_COOKIE_NAME);
 }
 
@@ -437,6 +492,8 @@ function loadAuthFromCookie() {
     return false;
   }
   state.authToken = token;
+  state.authExpiredNotified = false;
+  scheduleAuthExpiry(payload);
   return true;
 }
 
@@ -471,7 +528,7 @@ function hideAuthModal() {
 function getAuthHeader() {
   const payload = decodeToken(state.authToken || "");
   if (!payload || tokenExpired(payload)) {
-    clearAuthToken();
+    handleAuthExpired();
     return "";
   }
   return `Bearer ${state.authToken}`;
@@ -800,17 +857,18 @@ function populateScheduleScope() {
 
 async function loadSchedule() {
   if (!scheduleStatus) {
-    return;
+    return { ok: false, error: "Schedule UI unavailable." };
   }
   scheduleStatus.textContent = "Loading schedule...";
+  const scope = parseScheduleScope(scheduleScope?.value || "global");
   try {
-    const scope = parseScheduleScope(scheduleScope.value || "global");
     let cron = "";
     let info = null;
     if (scope.type === "global") {
       info = await api.get("/backup/schedule");
       cron = info.cron || "";
-      scheduleEnabled.checked = Boolean(cron);
+      scheduleEnabled.checked =
+        typeof info.enabled === "boolean" ? info.enabled : Boolean(cron);
       if (scheduleEnabledLabel) {
         scheduleEnabledLabel.textContent = "Enable scheduled backups";
       }
@@ -877,8 +935,13 @@ async function loadSchedule() {
       syncCronFromBuilder();
     }
     scheduleStatus.textContent = "";
+    scheduleState.lastLoadFailed = false;
+    return { ok: true };
   } catch (err) {
-    scheduleStatus.textContent = `Failed to load schedule: ${err.message}`;
+    const message = `Failed to load schedule: ${err.message}`;
+    scheduleStatus.textContent = message;
+    scheduleState.lastLoadFailed = true;
+    return { ok: false, error: message };
   }
 }
 
@@ -887,16 +950,22 @@ async function saveSchedule() {
     return;
   }
   scheduleStatus.textContent = "Saving schedule...";
-  let cron = "";
-  if (scheduleEnabled.checked) {
-    const raw = cronExpression.value.trim();
-    cron = customCron.checked ? convertCustomCronToUtc(raw) : buildCronFromInputsUtc();
+  const raw = cronExpression.value.trim();
+  let cron = customCron.checked ? convertCustomCronToUtc(raw) : buildCronFromInputsUtc();
+  if (!cron) {
+    cron = "";
   }
   try {
     const scope = parseScheduleScope(scheduleScope.value || "global");
     if (scope.type === "global") {
-      await api.put("/backup/schedule", { cron: cron || null });
+      await api.put("/backup/schedule", {
+        cron: cron || null,
+        enabled: scheduleEnabled.checked,
+      });
     } else {
+      if (!scheduleEnabled.checked) {
+        cron = "";
+      }
       await api.put(
         `/hosts/${scope.hostId}/projects/${scope.projectName}/backup/settings`,
         { cron_override: cron || null }
@@ -1056,7 +1125,7 @@ function closeLogsModal() {
   stopLogFollow();
 }
 
-function openBackupScheduleModal() {
+async function openBackupScheduleModal() {
   if (!backupScheduleModal) {
     return;
   }
@@ -1075,7 +1144,10 @@ function openBackupScheduleModal() {
       scheduleScope.value = onlyProject;
     }
   }
-  loadSchedule();
+  const result = await loadSchedule();
+  if (!result.ok && result.error) {
+    showToast(result.error, "error");
+  }
 }
 
 function closeBackupScheduleModal() {
@@ -1481,6 +1553,7 @@ function buildBackupConfigEntry(backup, isNew) {
   const protocolInput = entry.querySelector(".backup-protocol");
   const portInput = entry.querySelector(".backup-port");
   const basePathInput = entry.querySelector(".backup-base-path");
+  const enabledInput = entry.querySelector(".backup-enabled");
   idInput.value = backup?.id || "";
   addressInput.value = backup?.address || "";
   usernameInput.value = backup?.username || "";
@@ -1488,6 +1561,9 @@ function buildBackupConfigEntry(backup, isNew) {
   protocolInput.value = backup?.protocol || "ssh";
   portInput.value = backup?.port ?? 22;
   basePathInput.value = backup?.base_path || "";
+  if (enabledInput) {
+    enabledInput.checked = backup?.enabled ?? true;
+  }
   if (!isNew) {
     idInput.disabled = true;
   }
@@ -1540,6 +1616,7 @@ function readBackupConfig(entry) {
     protocol: entry.querySelector(".backup-protocol").value.trim(),
     port: Number.parseInt(entry.querySelector(".backup-port").value, 10) || 22,
     base_path: entry.querySelector(".backup-base-path").value.trim(),
+    enabled: entry.querySelector(".backup-enabled")?.checked ?? true,
   };
 }
 
@@ -1622,6 +1699,8 @@ async function saveBackupConfig(entry) {
     entry.querySelector(".backup-id").disabled = true;
     setConfigStatus(`Backup ${data.id} saved.`, "success");
     await loadBackupScheduleStatus();
+    await loadBackupTargetsAvailability();
+    renderProjectList();
   } catch (err) {
     setConfigStatus(`Backup save failed: ${err.message}`, "error");
   } finally {
@@ -1643,6 +1722,8 @@ async function deleteBackupConfig(entry) {
     entry.remove();
     setConfigStatus(`Backup ${payload.id} deleted.`, "success");
     await loadBackupScheduleStatus();
+    await loadBackupTargetsAvailability();
+    renderProjectList();
   } catch (err) {
     setConfigStatus(`Backup delete failed: ${err.message}`, "error");
   } finally {
@@ -1754,6 +1835,8 @@ async function loadConfigEntries() {
         backupConfigList.appendChild(buildBackupConfigEntry(backup, false));
       });
     }
+    state.backupTargetsAvailable = backups.some((backup) => backup.enabled);
+    updateBulkBackupAvailability();
     if (!users.length) {
       const empty = document.createElement("div");
       empty.className = "empty";
@@ -2506,6 +2589,7 @@ function renderProjectList() {
     if (backupBtn) {
       backupBtn.classList.add("action-ready");
       setActionRunning(backupBtn, backupRunning);
+      backupBtn.disabled = !state.backupTargetsAvailable;
       backupBtn.classList.remove("hidden");
     }
     if (refreshBtn) {
@@ -2605,9 +2689,21 @@ function renderProjectList() {
           return button;
         };
 
-        const startBtn = createServiceActionButton("play_arrow", "Start service", "start");
-        const stopBtn = createServiceActionButton("stop", "Stop service", "stop");
-        const restartBtn = createServiceActionButton("replay", "Restart service", "restart");
+        const startBtn = createServiceActionButton(
+          "play_arrow",
+          "Start service (docker compose start)",
+          "start"
+        );
+        const stopBtn = createServiceActionButton(
+          "stop",
+          "Stop service (docker compose stop)",
+          "stop"
+        );
+        const restartBtn = createServiceActionButton(
+          "replay",
+          "Restart service (docker compose restart)",
+          "restart"
+        );
 
         const showStart = startRunning || !serviceRunning;
         const showStop = stopRunning || serviceRunning;
@@ -2671,6 +2767,7 @@ function renderProjectList() {
     projectList.appendChild(row);
   });
   updateBulkVisibility();
+  updateBulkBackupAvailability();
 }
 
 function renderLists() {
@@ -2938,6 +3035,11 @@ async function runProjectAction(button, hostId, projectName, action) {
   const projectKey = `${hostId}::${projectName}`;
   const isRunning = button.dataset.actionRunning === "true";
 
+  if (isBackup && !state.backupTargetsAvailable) {
+    showToast("No enabled backup targets.", "error");
+    return;
+  }
+
   if (isRunning) {
     button.disabled = true;
     try {
@@ -3126,10 +3228,26 @@ function updateBulkVisibility() {
   }
 }
 
+function updateBulkBackupAvailability() {
+  if (!bulkActions) {
+    return;
+  }
+  const backupBtn = bulkActions.querySelector(
+    ".bulk-action[data-bulk-action=\"backup\"]"
+  );
+  if (backupBtn) {
+    backupBtn.disabled = !state.backupTargetsAvailable;
+  }
+}
+
 async function runBulkAction(action) {
   const selected = getSelectedProjectEntries();
   if (!selected.length) {
     alert("Select one or more projects first.");
+    return;
+  }
+  if (action === "backup" && !state.backupTargetsAvailable) {
+    alert("No enabled backup targets.");
     return;
   }
 
@@ -3370,8 +3488,21 @@ async function loadBackupScheduleStatus() {
   } catch (err) {
     state.backupScheduleAvailable = false;
     if (openBackupScheduleBtn) {
-      openBackupScheduleBtn.disabled = true;
+      openBackupScheduleBtn.disabled = false;
     }
+  }
+}
+
+async function loadBackupTargetsAvailability() {
+  try {
+    const backups = await api.get("/config/backups");
+    state.backupTargetsAvailable = backups.some((backup) => backup.enabled);
+  } catch (err) {
+    state.backupTargetsAvailable = false;
+  }
+  updateBulkBackupAvailability();
+  if (state.initialized) {
+    renderProjectList();
   }
 }
 
@@ -3396,6 +3527,7 @@ async function initApp(forceReload = false) {
   try {
     await loadHosts();
     await loadBackupScheduleStatus();
+    await loadBackupTargetsAvailability();
     await loadState();
     state.initialized = true;
   } catch (err) {

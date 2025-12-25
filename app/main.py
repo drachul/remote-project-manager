@@ -105,6 +105,7 @@ def ui_index() -> HTMLResponse:
 
 @app.on_event("startup")
 async def load_settings() -> None:
+    app.state.loop = asyncio.get_running_loop()
     app.state.config = load_config()
     app.state.config = _load_config_from_db(app.state.config)
     _configure_logging(app.state.config.log_level)
@@ -378,7 +379,8 @@ def _ensure_db(path: str) -> None:
                 "password TEXT, "
                 "base_path TEXT, "
                 "protocol TEXT, "
-                "port INTEGER"
+                "port INTEGER, "
+                "enabled BOOLEAN DEFAULT 1"
                 ")"
             )
             conn.execute(
@@ -425,6 +427,7 @@ def _ensure_db(path: str) -> None:
             _ensure_column(conn, "backup_state", "last_backup_message", "TEXT")
             _ensure_column(conn, "backup_state", "cron_override", "TEXT")
             _ensure_column(conn, "project_state", "sleeping", "BOOLEAN DEFAULT 0")
+            _ensure_column(conn, "backups", "enabled", "BOOLEAN DEFAULT 1")
             admin_exists = conn.execute(
                 "SELECT 1 FROM users WHERE username = ?", ("admin",)
             ).fetchone()
@@ -512,19 +515,32 @@ def _persist_interval_setting(key: str, value: int) -> None:
 
 
 def _load_backup_cron() -> Optional[str]:
+    cron, enabled = _load_backup_cron_state()
+    if not enabled:
+        return None
+    return cron
+
+
+def _load_backup_cron_state() -> tuple[Optional[str], bool]:
     path = app.state.db_path
     if not path:
-        return None
+        return None, False
     _ensure_db(path)
-    return _read_setting(path, "backup_cron")
+    cron = _read_setting(path, "backup_cron")
+    enabled_value = _read_setting(path, "backup_cron_enabled")
+    if enabled_value is None:
+        return cron, bool(cron)
+    return cron, enabled_value.strip().lower() in ("1", "true", "yes", "on")
 
 
-def _persist_backup_cron(cron_expr: Optional[str]) -> None:
+def _persist_backup_cron(cron_expr: Optional[str], enabled: Optional[bool] = None) -> None:
     path = app.state.db_path
     if not path:
         return
     _ensure_db(path)
     _write_setting(path, "backup_cron", cron_expr)
+    if enabled is not None:
+        _write_setting(path, "backup_cron_enabled", "1" if enabled else "0")
 
 
 def _ensure_backup_entries(host_id: str, projects: List[str]) -> None:
@@ -719,9 +735,12 @@ def _read_setting(path: str, key: str) -> Optional[str]:
     return row[0] if row else None
 
 
-def _write_setting(path: str, key: str, value: str) -> None:
+def _write_setting(path: str, key: str, value: Optional[str]) -> None:
     _ensure_db(path)
     with _open_db(path) as conn:
+        if value is None:
+            conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+            return
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -818,7 +837,7 @@ def _load_backup_from_db(path: str) -> Optional[BackupConfig]:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT address, username, password, base_path, protocol, port "
-            "FROM backups ORDER BY id LIMIT 1"
+            "FROM backups WHERE enabled = 1 ORDER BY id LIMIT 1"
         ).fetchone()
     if not row:
         return None
@@ -1679,10 +1698,24 @@ def _start_token_cleanup_task() -> Optional[asyncio.Task]:
 
 
 def _restart_backup_task() -> None:
-    task = getattr(app.state, "backup_task", None)
-    if task:
-        task.cancel()
-    app.state.backup_task = _start_backup_task()
+    def _restart() -> None:
+        task = getattr(app.state, "backup_task", None)
+        if task:
+            task.cancel()
+        app.state.backup_task = _start_backup_task()
+
+    try:
+        asyncio.get_running_loop()
+        _restart()
+        return
+    except RuntimeError:
+        pass
+
+    loop = getattr(app.state, "loop", None)
+    if loop and loop.is_running():
+        loop.call_soon_threadsafe(_restart)
+        return
+    logger.warning("Backup task restart skipped: no running event loop.")
 
 
 async def _stop_state_task() -> None:
@@ -2324,7 +2357,7 @@ def list_backup_configs() -> List[BackupConfigEntry]:
     with _open_db(path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT id, address, username, password, base_path, protocol, port "
+            "SELECT id, address, username, password, base_path, protocol, port, enabled "
             "FROM backups ORDER BY id"
         ).fetchall()
     entries = []
@@ -2338,6 +2371,7 @@ def list_backup_configs() -> List[BackupConfigEntry]:
                 base_path=row["base_path"] or "",
                 protocol=row["protocol"] or "ssh",
                 port=int(row["port"] or 22),
+                enabled=bool(row["enabled"]),
             )
         )
     return entries
@@ -2362,8 +2396,8 @@ def create_backup_config(entry: BackupConfigEntry) -> BackupConfigEntry:
     try:
         with _open_db(path) as conn:
             conn.execute(
-                "INSERT INTO backups (id, address, username, password, base_path, protocol, port) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO backups (id, address, username, password, base_path, protocol, port, enabled) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     entry.id.strip(),
                     entry.address.strip(),
@@ -2372,6 +2406,7 @@ def create_backup_config(entry: BackupConfigEntry) -> BackupConfigEntry:
                     entry.base_path.strip(),
                     protocol,
                     entry.port,
+                    1 if entry.enabled else 0,
                 ),
             )
     except sqlite3.IntegrityError as exc:
@@ -2399,7 +2434,7 @@ def update_backup_config(backup_id: str, entry: BackupConfigEntry) -> BackupConf
     path = _require_db_path()
     with _open_db(path) as conn:
         cursor = conn.execute(
-            "UPDATE backups SET address = ?, username = ?, password = ?, base_path = ?, protocol = ?, port = ? "
+            "UPDATE backups SET address = ?, username = ?, password = ?, base_path = ?, protocol = ?, port = ?, enabled = ? "
             "WHERE id = ?",
             (
                 entry.address.strip(),
@@ -2408,6 +2443,7 @@ def update_backup_config(backup_id: str, entry: BackupConfigEntry) -> BackupConf
                 entry.base_path.strip(),
                 protocol,
                 entry.port,
+                1 if entry.enabled else 0,
                 backup_id,
             ),
         )
@@ -3410,16 +3446,14 @@ async def update_update_interval(
 
 @app.get("/backup/schedule", response_model=BackupScheduleResponse)
 async def get_backup_schedule() -> BackupScheduleResponse:
-    if not _config().backup:
-        raise HTTPException(status_code=400, detail="Backup configuration missing.")
     if not app.state.db_path:
         raise HTTPException(status_code=400, detail="DB_PATH not configured.")
-    cron_expr = await asyncio.to_thread(_load_backup_cron)
+    cron_expr, enabled = await asyncio.to_thread(_load_backup_cron_state)
     next_run = None
-    if cron_expr:
+    if enabled and cron_expr:
         next_run = await asyncio.to_thread(_next_cron_run, cron_expr, _now())
     return BackupScheduleResponse(
-        cron=cron_expr, next_run=next_run
+        cron=cron_expr, enabled=enabled, next_run=next_run
     )
 
 
@@ -3427,22 +3461,23 @@ async def get_backup_schedule() -> BackupScheduleResponse:
 async def update_backup_schedule(
     payload: BackupScheduleRequest,
 ) -> BackupScheduleResponse:
-    if not _config().backup:
-        raise HTTPException(status_code=400, detail="Backup configuration missing.")
     if not app.state.db_path:
         raise HTTPException(status_code=400, detail="DB_PATH not configured.")
     cron_expr = (payload.cron or "").strip() or None
+    enabled = payload.enabled if payload.enabled is not None else bool(cron_expr)
+    if enabled and not cron_expr:
+        raise HTTPException(status_code=400, detail="Cron expression required.")
     if cron_expr:
         next_run = _next_cron_run(cron_expr, _now())
         if not next_run:
             raise HTTPException(status_code=400, detail="Invalid cron expression.")
-    await asyncio.to_thread(_persist_backup_cron, cron_expr)
+    await asyncio.to_thread(_persist_backup_cron, cron_expr, enabled)
     await _stop_backup_task()
     app.state.backup_schedule_map = {}
     app.state.backup_task = _start_backup_task()
-    next_run = _next_cron_run(cron_expr, _now()) if cron_expr else None
+    next_run = _next_cron_run(cron_expr, _now()) if enabled and cron_expr else None
     return BackupScheduleResponse(
-        cron=cron_expr, next_run=next_run
+        cron=cron_expr, enabled=enabled, next_run=next_run
     )
 
 

@@ -119,16 +119,16 @@
           </span>
         </label>
         <div class="row-actions">
-          <button class="btn subtle host-action action-ready sleep-host" aria-label="Sleep host" title="Sleep host">
+          <button class="btn subtle host-action action-ready sleep-host" aria-label="Sleep host" title="Sleep host (stop running projects and mark sleeping)">
             <span class="material-symbols-outlined action-icon">bedtime</span>
           </button>
-          <button class="btn subtle host-action action-ready wake-host" aria-label="Wake host" title="Wake host">
+          <button class="btn subtle host-action action-ready wake-host" aria-label="Wake host" title="Wake host (start sleeping projects)">
             <span class="material-symbols-outlined action-icon">light_mode</span>
           </button>
           <button class="btn subtle host-action action-ready refresh-host" aria-label="Refresh project statuses" title="Refresh project statuses">
             <span class="material-symbols-outlined action-icon">refresh</span>
           </button>
-          <button class="btn subtle host-action action-ready scan-host" aria-label="Scan projects" title="Scan projects">
+          <button class="btn subtle host-action action-ready scan-host" aria-label="Scan projects" title="Scan projects on host">
             <span class="material-symbols-outlined action-icon">scan</span>
           </button>
         </div>
@@ -168,28 +168,28 @@
           <span class="badge cancelled hidden">cancelled</span>
         </div>
         <div class="row-actions">
-          <button class="btn ghost project-action" data-action="start" aria-label="Start" title="Start">
+          <button class="btn ghost project-action" data-action="start" aria-label="Start project" title="Start project (docker compose start)">
             <span class="material-symbols-outlined action-icon action-label">play_arrow</span>
           </button>
-          <button class="btn ghost project-action" data-action="stop" aria-label="Stop" title="Stop">
+          <button class="btn ghost project-action" data-action="stop" aria-label="Stop project" title="Stop project (docker compose stop)">
             <span class="material-symbols-outlined action-icon action-label">stop</span>
           </button>
-          <button class="btn ghost project-action" data-action="restart" aria-label="Restart" title="Restart">
+          <button class="btn ghost project-action" data-action="restart" aria-label="Restart project" title="Restart project (docker compose restart)">
             <span class="material-symbols-outlined action-icon action-label">replay</span>
           </button>
-          <button class="btn ghost project-action" data-action="update" aria-label="Update" title="Update">
+          <button class="btn ghost project-action" data-action="update" aria-label="Update project" title="Update project images">
             <span class="material-symbols-outlined action-icon action-label">system_update_alt</span>
           </button>
-          <button class="btn ghost project-action" data-action="backup" aria-label="Backup" title="Backup">
+          <button class="btn ghost project-action" data-action="backup" aria-label="Backup project" title="Backup project">
             <span class="material-symbols-outlined action-icon action-label">backup</span>
           </button>
-          <button class="btn ghost project-action" data-action="refresh" aria-label="Refresh" title="Refresh">
+          <button class="btn ghost project-action" data-action="refresh" aria-label="Refresh project status" title="Refresh project status">
             <span class="material-symbols-outlined action-icon action-label">refresh</span>
           </button>
-          <button class="btn ghost logs" aria-label="Logs" title="Logs">
+          <button class="btn ghost logs" aria-label="Logs" title="View logs">
             <span class="material-symbols-outlined action-icon">article</span>
           </button>
-          <button class="btn ghost compose" aria-label="Compose" title="Compose">
+          <button class="btn ghost compose" aria-label="Compose file" title="Edit compose file">
             <span class="material-symbols-outlined action-icon">edit_document</span>
           </button>
         </div>
@@ -259,6 +259,10 @@
             <div class="config-entry-sub">Where rsync backups are sent.</div>
           </div>
           <div class="config-entry-actions">
+            <label class="toggle">
+              <input type="checkbox" class="backup-enabled" />
+              <span>Enabled</span>
+            </label>
             <button class="btn subtle config-save">Save</button>
             <button class="btn ghost config-delete">Delete</button>
           </div>

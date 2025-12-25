@@ -29,6 +29,7 @@ class BackupConfigEntry(BaseModel):
     base_path: str
     protocol: str = "ssh"
     port: int = 22
+    enabled: bool = True
 
 
 class SimpleStatusResponse(BaseModel):
@@ -218,8 +219,10 @@ class BackupSettingsResponse(BaseModel):
 
 class BackupScheduleRequest(BaseModel):
     cron: Optional[str] = None
+    enabled: Optional[bool] = None
 
 
 class BackupScheduleResponse(BaseModel):
     cron: Optional[str] = None
+    enabled: bool = False
     next_run: Optional[datetime] = None
