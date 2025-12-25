@@ -429,7 +429,7 @@ def _ensure_db(path: str) -> None:
                 "SELECT 1 FROM users WHERE username = ?", ("admin",)
             ).fetchone()
             if not admin_exists:
-                admin_hash = _hash_password(secret_seed, "changemenow")
+                admin_hash = _hash_password(_secret_seed(), "changemenow")
                 conn.execute(
                     "INSERT INTO users (username, password, last_login) VALUES (?, ?, ?)",
                     ("admin", admin_hash, None),
