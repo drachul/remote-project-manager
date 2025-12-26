@@ -1289,6 +1289,19 @@ body {
   box-shadow: 0 8px 16px rgba(29, 26, 23, 0.12);
 }
 
+.btn:disabled,
+.btn[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+.btn:disabled .action-icon,
+.btn[disabled] .action-icon {
+  color: var(--muted);
+}
+
 .btn.primary {
   background: var(--accent);
   color: #0b0d12;
