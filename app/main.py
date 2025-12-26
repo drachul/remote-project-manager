@@ -1344,7 +1344,10 @@ def _persist_state_snapshot(
                         project_refreshed = value
                 if project_refreshed is None and include_status and status_ok:
                     project_refreshed = refreshed_at
-                overall_status = _derive_overall_status(statuses)
+                if include_status and status_ok and not statuses:
+                    overall_status = "down"
+                else:
+                    overall_status = _derive_overall_status(statuses)
                 conn.execute(
                     "UPDATE project_state SET overall_status = ?, updates_available = ?, "
                     "refreshed_at = COALESCE(?, refreshed_at) "
