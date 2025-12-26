@@ -1321,15 +1321,19 @@ def _persist_state_snapshot(
                     if service_list:
                         placeholders = ",".join(["?"] * len(service_list))
                         conn.execute(
-                            f"DELETE FROM service_state WHERE host_id = ? AND project_id = ? AND id NOT IN ({placeholders})",
-                            (host_id, project_id, *service_list),
+                            f"UPDATE service_state SET status = ?, refreshed_at = ? "
+                            f"WHERE host_id = ? AND project_id = ? AND id NOT IN ({placeholders})",
+                            ("down", refreshed_at_str, host_id, project_id, *service_list),
                         )
                     else:
                         conn.execute(
-                            "DELETE FROM service_state WHERE host_id = ? AND project_id = ?",
-                            (host_id, project_id),
+                            "UPDATE service_state SET status = ?, refreshed_at = ? "
+                            "WHERE host_id = ? AND project_id = ?",
+                            ("down", refreshed_at_str, host_id, project_id),
                         )
 
+                if not include_status and not include_updates:
+                    continue
                 rows = conn.execute(
                     "SELECT status, update_available, refreshed_at FROM service_state "
                     "WHERE host_id = ? AND project_id = ?",
@@ -1603,13 +1607,15 @@ def _update_project_status_state(
                 )
             placeholders = ",".join(["?"] * len(service_ids))
             conn.execute(
-                f"DELETE FROM service_state WHERE host_id = ? AND project_id = ? AND id NOT IN ({placeholders})",
-                (host_id, project_id, *service_ids),
+                f"UPDATE service_state SET status = ?, refreshed_at = ? "
+                f"WHERE host_id = ? AND project_id = ? AND id NOT IN ({placeholders})",
+                ("down", refreshed_at_str, host_id, project_id, *service_ids),
             )
         else:
             conn.execute(
-                "DELETE FROM service_state WHERE host_id = ? AND project_id = ?",
-                (host_id, project_id),
+                "UPDATE service_state SET status = ?, refreshed_at = ? "
+                "WHERE host_id = ? AND project_id = ?",
+                ("down", refreshed_at_str, host_id, project_id),
             )
 
         rows = conn.execute(
