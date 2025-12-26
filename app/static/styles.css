@@ -193,6 +193,11 @@ body {
   flex-wrap: wrap;
 }
 
+.host-panel-actions {
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
 .list {
   list-style: none;
   padding: 0;
@@ -209,7 +214,17 @@ body {
   border: 1px solid rgba(243, 244, 246, 0.08);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
+}
+
+.project-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-header .checkbox {
+  flex: 1;
 }
 
 .list-row.working {
@@ -239,7 +254,7 @@ body {
 .checkbox-label {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   flex: 1;
 }
 
@@ -248,7 +263,7 @@ body {
   font-weight: 600;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
 }
 
@@ -303,13 +318,15 @@ body {
 }
 
 .project-delete {
-  padding: 4px 10px;
+  padding: 3px 8px;
 }
 
-.row-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.project-details {
+  padding: 3px 8px;
+}
+
+.project-details .action-icon {
+  font-size: 14px;
 }
 
 .icon-badges {
@@ -356,8 +373,22 @@ body {
 
 .row-actions {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
+}
+
+.host-actions {
+  width: 100%;
+  flex-wrap: nowrap;
+}
+
+.host-actions .host-action {
+  flex: 1;
+  justify-content: center;
+}
+
+.host-actions .btn {
+  width: 100%;
 }
 
 .host-action {
@@ -771,10 +802,10 @@ body {
 
 
 .project-extra {
-  margin-top: 12px;
+  margin-top: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
 }
 
 .container-summary {
@@ -1198,6 +1229,31 @@ body {
   grid-column: 1 / -1;
 }
 
+.details-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.detail-item {
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: 12px;
+  padding: 12px;
+  border: 1px solid rgba(243, 244, 246, 0.08);
+}
+
+.detail-label {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.detail-value {
+  font-size: 14px;
+  color: var(--text);
+  word-break: break-word;
+}
+
 .create-run {
   display: flex;
   align-items: flex-end;
@@ -1249,14 +1305,14 @@ body {
   border: none;
   cursor: pointer;
   border-radius: 999px;
-  padding: 8px 14px;
+  padding: 6px 10px;
   font-weight: 600;
-  font-size: 13px;
+  font-size: 10px;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .btn .action-icon {
-  font-size: 23px;
+  font-size: 17px;
   line-height: 1;
 }
 

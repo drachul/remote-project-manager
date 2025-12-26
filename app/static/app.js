@@ -33,6 +33,14 @@ const refreshLogsBtn = document.getElementById("refreshLogs");
 const toggleFollowBtn = document.getElementById("toggleFollow");
 const logsShowStdout = document.getElementById("logsShowStdout");
 const logsShowStderr = document.getElementById("logsShowStderr");
+const projectDetailsModal = document.getElementById("projectDetailsModal");
+const closeProjectDetailsModalBtn = document.getElementById("closeProjectDetailsModal");
+const projectDetailsTitle = document.getElementById("projectDetailsTitle");
+const projectDetailsHost = document.getElementById("projectDetailsHost");
+const projectDetailsPath = document.getElementById("projectDetailsPath");
+const projectDetailsBackup = document.getElementById("projectDetailsBackup");
+const projectDetailsBackupSuccess = document.getElementById("projectDetailsBackupSuccess");
+const projectDetailsStatus = document.getElementById("projectDetailsStatus");
 const openBackupScheduleBtn = document.getElementById("openBackupSchedule");
 const backupScheduleModal = document.getElementById("backupScheduleModal");
 const closeBackupScheduleModalBtn = document.getElementById("closeBackupScheduleModal");
@@ -1123,6 +1131,43 @@ function closeLogsModal() {
   logsState.projectName = null;
   logsContent.textContent = "";
   stopLogFollow();
+}
+
+function openProjectDetailsModal(entry) {
+  if (!projectDetailsModal) {
+    return;
+  }
+  projectDetailsModal.classList.remove("hidden");
+  if (projectDetailsTitle) {
+    projectDetailsTitle.textContent = `${entry.hostId} / ${entry.projectName}`;
+  }
+  if (projectDetailsHost) {
+    projectDetailsHost.textContent = entry.hostId || "unknown";
+  }
+  if (projectDetailsPath) {
+    projectDetailsPath.textContent = entry.path || "unknown";
+  }
+  if (projectDetailsBackup) {
+    projectDetailsBackup.textContent = formatTimestamp(entry.lastBackupAt);
+  }
+  if (projectDetailsBackupSuccess) {
+    let successText = "unknown";
+    if (entry.lastBackupSuccess === true) {
+      successText = "success";
+    } else if (entry.lastBackupSuccess === false) {
+      successText = "failed";
+    }
+    projectDetailsBackupSuccess.textContent = successText;
+  }
+  if (projectDetailsStatus) {
+    projectDetailsStatus.textContent = formatTimestamp(entry.refreshedAt);
+  }
+}
+
+function closeProjectDetailsModal() {
+  if (projectDetailsModal) {
+    projectDetailsModal.classList.add("hidden");
+  }
 }
 
 async function openBackupScheduleModal() {
@@ -2410,49 +2455,9 @@ function renderProjectList() {
     });
 
     row.querySelector(".project-name").textContent = entry.projectName;
-    const projectMetaText = row.querySelector(".project-meta-text");
-    if (projectMetaText) {
-      projectMetaText.textContent = `${entry.hostId} • ${entry.path}`;
-    }
 
-    const statusBadge = row.querySelector(".badge.status");
     const statusInfo = projectStatusLabel(entry.status);
-    statusBadge.textContent = statusInfo.label;
-    if (statusInfo.className) {
-      statusBadge.classList.add(statusInfo.className);
-    }
-
-    const updatesBadge = row.querySelector(".badge.updates");
     const updatesInfo = updateBadgeLabel(entry.updatesAvailable);
-    updatesBadge.textContent = updatesInfo.label;
-    if (updatesInfo.className) {
-      updatesBadge.classList.add(updatesInfo.className);
-    }
-    if (!state.updatesEnabled) {
-      updatesBadge.classList.add("hidden");
-    }
-
-    const cancelledBadge = row.querySelector(".badge.cancelled");
-    if (state.backupCancelled.has(entry.key)) {
-      cancelledBadge.classList.remove("hidden");
-    } else {
-      cancelledBadge.classList.add("hidden");
-    }
-
-    const backupBadge = row.querySelector(".backup-meta");
-    const backupInfo = backupBadgeInfo(entry);
-    backupBadge.textContent = backupInfo.label;
-    backupBadge.classList.remove("backup-ok", "backup-fail");
-    if (entry.lastBackupMessage) {
-      backupBadge.title = entry.lastBackupMessage;
-    } else {
-      backupBadge.title = "";
-    }
-
-    const stateMeta = row.querySelector(".state-meta");
-    if (stateMeta) {
-      stateMeta.textContent = `State updated: ${formatTimestamp(entry.refreshedAt)}`;
-    }
 
     const backupToggle = row.querySelector(".backup-checkbox");
     if (backupToggle) {
@@ -2502,6 +2507,15 @@ function renderProjectList() {
         event.preventDefault();
         event.stopPropagation();
         openDeleteProjectModal(entry.hostId, entry.projectName);
+      });
+    }
+
+    const detailsBtn = row.querySelector(".project-details");
+    if (detailsBtn) {
+      detailsBtn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openProjectDetailsModal(entry);
       });
     }
 
@@ -3634,6 +3648,9 @@ document.addEventListener("keydown", (event) => {
   if (!logsModal.classList.contains("hidden")) {
     closeLogsModal();
   }
+  if (projectDetailsModal && !projectDetailsModal.classList.contains("hidden")) {
+    closeProjectDetailsModal();
+  }
   if (backupScheduleModal && !backupScheduleModal.classList.contains("hidden")) {
     closeBackupScheduleModal();
   }
@@ -3652,6 +3669,14 @@ closeLogsModalBtn.addEventListener("click", closeLogsModal);
 logsModal
   .querySelector(".modal-backdrop")
   .addEventListener("click", closeLogsModal);
+if (closeProjectDetailsModalBtn) {
+  closeProjectDetailsModalBtn.addEventListener("click", closeProjectDetailsModal);
+}
+if (projectDetailsModal) {
+  projectDetailsModal
+    .querySelector(".modal-backdrop")
+    .addEventListener("click", closeProjectDetailsModal);
+}
 openBackupScheduleBtn.addEventListener("click", openBackupScheduleModal);
 closeBackupScheduleModalBtn.addEventListener("click", closeBackupScheduleModal);
 backupScheduleModal

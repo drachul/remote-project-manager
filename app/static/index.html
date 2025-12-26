@@ -38,7 +38,7 @@
               <h2>Hosts</h2>
               <div class="panel-sub">Select hosts to filter the project list.</div>
             </div>
-            <div class="panel-actions">
+            <div class="panel-actions host-panel-actions">
               <button class="btn subtle" id="selectAllHosts">Select all</button>
               <button class="btn subtle" id="clearHosts">Clear</button>
             </div>
@@ -118,7 +118,7 @@
             <span class="row-subtitle host-meta"></span>
           </span>
         </label>
-        <div class="row-actions">
+        <div class="row-actions host-actions">
           <button class="btn subtle host-action action-ready sleep-host" aria-label="Sleep host" title="Sleep host (stop running projects and mark sleeping)">
             <span class="material-symbols-outlined action-icon">bedtime</span>
           </button>
@@ -137,60 +137,55 @@
 
     <template id="projectRowTemplate">
       <li class="list-row project-row">
-        <label class="checkbox">
-          <input class="project-checkbox" type="checkbox" />
-          <span class="checkbox-label">
-          <span class="row-title">
-            <span class="project-name"></span>
-            <span class="icon-badges">
-              <span class="material-symbols-outlined status-icon" title="Status"></span>
-              <span class="material-symbols-outlined updates-icon" title="Updates"></span>
-              <span class="material-symbols-outlined sleep-icon" title="Sleeping"></span>
-            </span>
-            <label class="toggle backup-toggle">
-              <input class="backup-checkbox" type="checkbox" />
-              <span>Backup?</span>
-            </label>
-            <button class="btn ghost project-delete" title="Delete project" aria-label="Delete project">
-              <span class="material-symbols-outlined action-icon delete-icon">delete</span>
-            </button>
-          </span>
-            <span class="row-subtitle project-meta">
-              <span class="project-meta-text"></span>
-              <span class="backup-meta">Last Backup: never</span>
-              <span class="state-meta">State updated: never</span>
+        <div class="project-header">
+          <label class="checkbox">
+            <input class="project-checkbox" type="checkbox" />
+            <span class="checkbox-label">
+            <span class="row-title">
+              <span class="project-name"></span>
+              <span class="icon-badges">
+                <span class="material-symbols-outlined status-icon" title="Status"></span>
+                <span class="material-symbols-outlined updates-icon" title="Updates"></span>
+                <span class="material-symbols-outlined sleep-icon" title="Sleeping"></span>
+              </span>
+              <label class="toggle backup-toggle">
+                <input class="backup-checkbox" type="checkbox" />
+                <span>Backup?</span>
+              </label>
+              <button class="btn ghost project-details" aria-label="Project details" title="Project details">
+                <span class="material-symbols-outlined action-icon">info</span>
+              </button>
             </span>
           </span>
         </label>
-        <div class="row-meta">
-          <span class="badge status hidden">unknown</span>
-          <span class="badge updates hidden">updates: n/a</span>
-          <span class="badge cancelled hidden">cancelled</span>
-        </div>
-        <div class="row-actions">
-          <button class="btn ghost project-action" data-action="start" aria-label="Start project" title="Start project (docker compose start)">
-            <span class="material-symbols-outlined action-icon action-label">play_arrow</span>
-          </button>
-          <button class="btn ghost project-action" data-action="stop" aria-label="Stop project" title="Stop project (docker compose stop)">
-            <span class="material-symbols-outlined action-icon action-label">stop</span>
-          </button>
-          <button class="btn ghost project-action" data-action="restart" aria-label="Restart project" title="Restart project (docker compose restart)">
-            <span class="material-symbols-outlined action-icon action-label">replay</span>
-          </button>
-          <button class="btn ghost project-action" data-action="update" aria-label="Update project" title="Update project images">
-            <span class="material-symbols-outlined action-icon action-label">system_update_alt</span>
-          </button>
-          <button class="btn ghost project-action" data-action="backup" aria-label="Backup project" title="Backup project">
-            <span class="material-symbols-outlined action-icon action-label">backup</span>
-          </button>
-          <button class="btn ghost project-action" data-action="refresh" aria-label="Refresh project status" title="Refresh project status">
-            <span class="material-symbols-outlined action-icon action-label">refresh</span>
-          </button>
-          <button class="btn ghost logs" aria-label="Logs" title="View logs">
-            <span class="material-symbols-outlined action-icon">article</span>
-          </button>
-          <button class="btn ghost compose" aria-label="Compose file" title="Edit compose file">
-            <span class="material-symbols-outlined action-icon">edit_document</span>
+          <div class="row-actions">
+            <button class="btn ghost project-action" data-action="start" aria-label="Start project" title="Start project (docker compose start)">
+              <span class="material-symbols-outlined action-icon action-label">play_arrow</span>
+            </button>
+            <button class="btn ghost project-action" data-action="stop" aria-label="Stop project" title="Stop project (docker compose stop)">
+              <span class="material-symbols-outlined action-icon action-label">stop</span>
+            </button>
+            <button class="btn ghost project-action" data-action="restart" aria-label="Restart project" title="Restart project (docker compose restart)">
+              <span class="material-symbols-outlined action-icon action-label">replay</span>
+            </button>
+            <button class="btn ghost project-action" data-action="update" aria-label="Update project" title="Update project images">
+              <span class="material-symbols-outlined action-icon action-label">system_update_alt</span>
+            </button>
+            <button class="btn ghost project-action" data-action="backup" aria-label="Backup project" title="Backup project">
+              <span class="material-symbols-outlined action-icon action-label">backup</span>
+            </button>
+            <button class="btn ghost project-action" data-action="refresh" aria-label="Refresh project status" title="Refresh project status">
+              <span class="material-symbols-outlined action-icon action-label">refresh</span>
+            </button>
+            <button class="btn ghost logs" aria-label="Logs" title="View logs">
+              <span class="material-symbols-outlined action-icon">article</span>
+            </button>
+            <button class="btn ghost compose" aria-label="Compose file" title="Edit compose file">
+              <span class="material-symbols-outlined action-icon">edit_document</span>
+            </button>
+          </div>
+          <button class="btn ghost project-delete" title="Delete project" aria-label="Delete project">
+            <span class="material-symbols-outlined action-icon delete-icon">delete</span>
           </button>
         </div>
         <div class="project-extra">
@@ -391,6 +386,43 @@
         </div>
         <div class="logs-panel">
           <pre class="logs-content" id="logsContent"></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal hidden" id="projectDetailsModal">
+      <div class="modal-backdrop"></div>
+      <div class="modal-card">
+        <header class="modal-header">
+          <div>
+            <div class="modal-title">Project details</div>
+            <div class="modal-subtitle" id="projectDetailsTitle"></div>
+          </div>
+          <button class="btn subtle" id="closeProjectDetailsModal">Close</button>
+        </header>
+        <div class="modal-body">
+          <div class="details-grid">
+            <div class="detail-item">
+              <div class="detail-label">Host</div>
+              <div class="detail-value" id="projectDetailsHost"></div>
+            </div>
+            <div class="detail-item">
+              <div class="detail-label">Project path</div>
+              <div class="detail-value" id="projectDetailsPath"></div>
+            </div>
+            <div class="detail-item">
+              <div class="detail-label">Last backup</div>
+              <div class="detail-value" id="projectDetailsBackup"></div>
+            </div>
+            <div class="detail-item">
+              <div class="detail-label">Backup success</div>
+              <div class="detail-value" id="projectDetailsBackupSuccess"></div>
+            </div>
+            <div class="detail-item">
+              <div class="detail-label">Status updated</div>
+              <div class="detail-value" id="projectDetailsStatus"></div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
