@@ -725,6 +725,8 @@ def _set_project_sleeping(host_id: str, project: str, sleeping: bool) -> None:
 def _open_db(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA foreign_keys = ON")
+    if logger.isEnabledFor(logging.DEBUG):
+        conn.set_trace_callback(lambda statement: logger.debug("SQL: %s", statement))
     return conn
 
 
@@ -1340,9 +1342,12 @@ def _persist_state_snapshot(
                 for value in refreshed_values:
                     if value and (project_refreshed is None or value > project_refreshed):
                         project_refreshed = value
+                if project_refreshed is None and include_status and status_ok:
+                    project_refreshed = refreshed_at
                 overall_status = _derive_overall_status(statuses)
                 conn.execute(
-                    "UPDATE project_state SET overall_status = ?, updates_available = ?, refreshed_at = ? "
+                    "UPDATE project_state SET overall_status = ?, updates_available = ?, "
+                    "refreshed_at = COALESCE(?, refreshed_at) "
                     "WHERE host_id = ? AND id = ?",
                     (
                         overall_status,
@@ -1993,21 +1998,19 @@ async def _refresh_update_state(host_ids: Optional[List[str]] = None) -> datetim
 
 
 async def _refresh_project_state(host_id: str, project: str) -> datetime:
-    config = _config()
-    now, hosts_data = await asyncio.to_thread(
-        _build_state_snapshot, config, [host_id], False, False
-    )
-    host_data = hosts_data.get(host_id) if hosts_data else None
-    if not host_data or host_data.get("_project_list_failed"):
-        raise HTTPException(status_code=502, detail="Unable to list projects.")
-    projects = [
-        item.get("project") for item in host_data.get("projects", []) if item.get("project")
-    ]
+    host = _host(host_id)
+    try:
+        project_paths = await asyncio.to_thread(compose.list_projects, host)
+    except Exception as exc:
+        _handle_errors(exc)
+    projects = [os.path.basename(path.rstrip("/")) for path in project_paths]
     if project not in projects:
         raise HTTPException(status_code=404, detail="Unknown project.")
-    await _apply_state_snapshot(hosts_data, False, False, now)
+    path_map = {name: path for name, path in zip(projects, project_paths)}
+    project_path = path_map.get(project, "")
+    await asyncio.to_thread(_record_project_state, host_id, project, project_path)
+    await asyncio.to_thread(_ensure_backup_entries, host_id, [project])
 
-    host = _host(host_id)
     project_id = _project_id(host_id, project)
     try:
         overall, containers, _ = await asyncio.to_thread(
