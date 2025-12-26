@@ -376,6 +376,11 @@ def docker_run_to_compose(command: str, service_name: Optional[str] = None) -> T
                 cap_drop.append(value)
                 index += consumed
                 continue
+            value, consumed = _consume_value(tokens, index, "--privileged")
+            if consumed:
+                privileged = value.strip().lower() in ("1", "true", "yes", "on")
+                index += consumed
+                continue
             if token == "--privileged":
                 privileged = True
                 index += 1
