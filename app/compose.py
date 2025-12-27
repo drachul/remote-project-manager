@@ -1,9 +1,14 @@
 import json
+import logging
+import os
 import re
 import shlex
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from .config import BackupConfig, HostConfig
 from .ssh import (
@@ -32,9 +37,23 @@ COMPOSE_FILENAMES = (
     "docker-compose.yaml",
 )
 
-UPDATE_CHECKS_ENABLED = False
+UPDATE_CHECKS_ENABLED = os.getenv("UPDATE_CHECKS_ENABLED", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 _SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+_REGISTRY_AUTH_PARAM_RE = re.compile(r'(\w+)="([^"]*)"')
+logger = logging.getLogger("rpm")
+
+
+def _redact_headers(headers: Dict[str, str]) -> Dict[str, str]:
+    return {
+        key: ("<redacted>" if key.lower() == "authorization" else value)
+        for key, value in headers.items()
+    }
 
 
 def _sanitize_service_name(value: Optional[str]) -> str:
@@ -993,33 +1012,186 @@ def _local_image_platform(host: HostConfig, image: str) -> Dict[str, Optional[st
     return {"architecture": architecture, "os": os_name, "variant": variant}
 
 
-def _remote_manifest(host: HostConfig, image: str) -> dict:
-    image_q = shlex.quote(image)
-    command = f"docker manifest inspect --verbose {image_q}"
-    result = run_ssh_command(host, command)
-    if result.exit_code != 0:
-        message = result.stderr or result.stdout or "Manifest inspect failed"
-        raise ComposeError(message)
+def _parse_image_reference(image: str) -> Tuple[str, str, str, bool]:
+    name = image
+    reference = "latest"
+    is_digest = False
+    if "@" in image:
+        name, reference = image.split("@", 1)
+        is_digest = True
+    else:
+        last_segment = name.rsplit("/", 1)[-1]
+        if ":" in last_segment:
+            name, reference = name.rsplit(":", 1)
+    if not name:
+        raise ComposeError("Invalid image reference")
+    first_segment = name.split("/", 1)[0]
+    if "." in first_segment or ":" in first_segment or first_segment == "localhost":
+        registry = first_segment
+        repository = name.split("/", 1)[1] if "/" in name else ""
+    else:
+        registry = "registry-1.docker.io"
+        repository = name
+    if registry in ("docker.io", "index.docker.io"):
+        registry = "registry-1.docker.io"
+    if registry == "registry-1.docker.io" and "/" not in repository:
+        repository = f"library/{repository}"
+    if not repository:
+        raise ComposeError("Invalid image reference")
+    return registry, repository, reference, is_digest
+
+
+def _parse_www_authenticate(value: Optional[str]) -> Dict[str, str]:
+    if not value:
+        return {}
+    if not value.lower().startswith("bearer "):
+        return {}
+    params = dict(_REGISTRY_AUTH_PARAM_RE.findall(value))
+    return params
+
+
+def _fetch_registry_token(auth: Dict[str, str]) -> str:
+    realm = auth.get("realm")
+    if not realm:
+        raise ComposeError("Registry auth missing realm")
+    params = {}
+    service = auth.get("service")
+    scope = auth.get("scope")
+    if service:
+        params["service"] = service
+    if scope:
+        params["scope"] = scope
+    url = realm
+    if params:
+        url = f"{realm}?{urlencode(params)}"
+    request = Request(url, headers={"Accept": "application/json"})
     try:
-        return json.loads(result.stdout)
+        with urlopen(request, timeout=15) as response:
+            payload = response.read()
+    except (HTTPError, URLError) as exc:
+        raise ComposeError(f"Registry auth failed: {exc}") from exc
+    try:
+        data = json.loads(payload)
     except json.JSONDecodeError as exc:
-        raise ComposeError("Manifest JSON parse failed") from exc
+        raise ComposeError("Registry auth response parse failed") from exc
+    token = data.get("token") or data.get("access_token")
+    if not token:
+        raise ComposeError("Registry auth token missing")
+    return token
+
+
+def _registry_request_json(url: str, headers: Dict[str, str]) -> Tuple[dict, Dict[str, str]]:
+    request = Request(url, headers=headers)
+    try:
+        logger.debug(
+            "Registry request url=%s headers=%s", url, _redact_headers(headers)
+        )
+        with urlopen(request, timeout=15) as response:
+            payload = response.read()
+            response_headers = dict(response.headers)
+            logger.debug(
+                "Registry response url=%s status=%s headers=%s",
+                url,
+                response.getcode(),
+                _redact_headers(response_headers),
+            )
+            return json.loads(payload), response_headers
+    except HTTPError as exc:
+        if exc.code == 401:
+            logger.debug(
+                "Registry response url=%s status=401 auth=%s",
+                url,
+                exc.headers.get("WWW-Authenticate"),
+            )
+            auth = _parse_www_authenticate(exc.headers.get("WWW-Authenticate"))
+            if not auth:
+                raise ComposeError("Registry authentication required") from exc
+            token = _fetch_registry_token(auth)
+            retry_headers = dict(headers)
+            retry_headers["Authorization"] = f"Bearer {token}"
+            retry_request = Request(url, headers=retry_headers)
+            try:
+                logger.debug(
+                    "Registry retry url=%s headers=%s",
+                    url,
+                    _redact_headers(retry_headers),
+                )
+                with urlopen(retry_request, timeout=15) as response:
+                    payload = response.read()
+                    response_headers = dict(response.headers)
+                    logger.debug(
+                        "Registry response url=%s status=%s headers=%s",
+                        url,
+                        response.getcode(),
+                        _redact_headers(response_headers),
+                    )
+                    return json.loads(payload), response_headers
+            except (HTTPError, URLError) as retry_exc:
+                raise ComposeError(f"Registry request failed: {retry_exc}") from retry_exc
+            except json.JSONDecodeError as retry_exc:
+                raise ComposeError("Registry manifest parse failed") from retry_exc
+        raise ComposeError(f"Registry request failed: {exc}") from exc
+    except URLError as exc:
+        raise ComposeError(f"Registry request failed: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ComposeError("Registry manifest parse failed") from exc
+
+
+def _remote_manifest(host: HostConfig, image: str) -> dict:
+    _ = host
+    registry, repository, reference, is_digest = _parse_image_reference(image)
+    if is_digest:
+        return {"Descriptor": {"digest": reference}}
+    url = f"https://{registry}/v2/{repository}/manifests/{reference}"
+    headers = {
+        "Accept": (
+            "application/vnd.oci.image.index.v1+json, "
+            "application/vnd.docker.distribution.manifest.list.v2+json, "
+            "application/vnd.oci.image.manifest.v1+json, "
+            "application/vnd.docker.distribution.manifest.v2+json, "
+            "application/vnd.docker.distribution.manifest.v1+json"
+        )
+    }
+    manifest, response_headers = _registry_request_json(url, headers)
+    digest = None
+    for key, value in response_headers.items():
+        if key.lower() == "docker-content-digest":
+            digest = value
+            break
+    if digest and isinstance(manifest, dict):
+        manifest.setdefault("Descriptor", {})["digest"] = digest
+    return manifest
 
 
 def _select_manifest_digest(
-    manifest: object, platform: Dict[str, Optional[str]]
+    manifest: object,
+    platform: Dict[str, Optional[str]],
+    local_digests: Optional[List[str]] = None,
 ) -> Optional[str]:
     if isinstance(manifest, list):
         for entry in manifest:
-            digest = _select_manifest_digest(entry, platform)
+            digest = _select_manifest_digest(entry, platform, local_digests)
             if digest:
                 return digest
         return None
     if not isinstance(manifest, dict):
         return None
 
+    local_digest_set = set(_digest_list(local_digests or []))
+    descriptor = manifest.get("Descriptor") or {}
+    descriptor_digest = descriptor.get("digest")
+    if descriptor_digest and descriptor_digest in local_digest_set:
+        logger.debug("Manifest digest selected via descriptor match: %s", descriptor_digest)
+        return descriptor_digest
+
     manifests = manifest.get("manifests")
     if isinstance(manifests, list) and manifests:
+        if local_digest_set:
+            for entry in manifests:
+                digest = entry.get("digest") or entry.get("Descriptor", {}).get("digest")
+                if digest in local_digest_set:
+                    logger.debug("Manifest digest selected via local match: %s", digest)
+                    return digest
         if platform:
             for entry in manifests:
                 entry_platform = entry.get("platform") or entry.get("Platform") or {}
@@ -1031,11 +1203,16 @@ def _select_manifest_digest(
                     if platform.get("variant") and entry_variant:
                         if entry_variant != platform.get("variant"):
                             continue
-                    return entry.get("digest") or entry.get("Descriptor", {}).get("digest")
+                    digest = entry.get("digest") or entry.get("Descriptor", {}).get("digest")
+                    if digest:
+                        logger.debug("Manifest digest selected via platform match: %s", digest)
+                    return digest
         entry = manifests[0]
-        return entry.get("digest") or entry.get("Descriptor", {}).get("digest")
-    descriptor = manifest.get("Descriptor") or {}
-    return descriptor.get("digest")
+        digest = entry.get("digest") or entry.get("Descriptor", {}).get("digest")
+        if digest:
+            logger.debug("Manifest digest selected via manifest fallback: %s", digest)
+        return digest
+    return descriptor_digest
 
 
 def _digest_list(repo_digests: List[str]) -> List[str]:
@@ -1071,7 +1248,7 @@ def check_updates(host: HostConfig, project: str) -> Tuple[bool, bool, str, Dict
             image_status[image] = {"status": "unknown", "error": str(exc)}
             errors.append(f"{image}: {exc}")
             continue
-        remote_digest = _select_manifest_digest(manifest, local_platform)
+        remote_digest = _select_manifest_digest(manifest, local_platform, local_digests)
         if not remote_digest:
             image_status[image] = {"status": "unknown", "error": "no remote digest"}
             errors.append(f"{image}: unable to determine registry digest")
@@ -1125,7 +1302,7 @@ def check_image_update(host: HostConfig, image: str) -> Optional[bool]:
         manifest = _remote_manifest(host, image)
     except ComposeError:
         return None
-    remote_digest = _select_manifest_digest(manifest, local_platform)
+    remote_digest = _select_manifest_digest(manifest, local_platform, local_digests)
     if not remote_digest:
         return None
     local_digest_list = _digest_list(local_digests)
