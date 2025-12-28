@@ -9,11 +9,15 @@ import os
 import secrets
 import sqlite3
 import string
+import stat
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
+
+import grp
+import pwd
 
 from croniter import croniter, CroniterBadCronError, CroniterBadDateError
 
@@ -107,8 +111,13 @@ def ui_index() -> HTMLResponse:
 async def load_settings() -> None:
     app.state.loop = asyncio.get_running_loop()
     app.state.config = load_config()
-    app.state.config = _load_config_from_db(app.state.config)
     _configure_logging(app.state.config.log_level)
+    app.state.db_path = _db_path()
+    if not app.state.db_path:
+        raise ConfigError("DB_PATH is not configured.")
+    _log_db_path_diagnostics(app.state.db_path)
+    _ensure_db(app.state.db_path)
+    app.state.config = _load_config_from_db(app.state.config)
     logger.info("Starting Remote Project Manager")
     app.state.state_lock = asyncio.Lock()
     app.state.backup_lock = asyncio.Lock()
@@ -117,11 +126,8 @@ async def load_settings() -> None:
     app.state.action_controls = {}
     app.state.backup_schedule_map = {}
     app.state.backup_schedule_event = asyncio.Event()
-    app.state.db_path = _db_path()
-    if app.state.db_path:
-        _ensure_db(app.state.db_path)
-        app.state.secret_seed = _load_secret_seed()
-        app.state.token_expiry_seconds = _load_token_expiry()
+    app.state.secret_seed = _load_secret_seed()
+    app.state.token_expiry_seconds = _load_token_expiry()
     app.state.state_interval_seconds = _load_interval_setting(
         "state_interval_seconds", _state_interval_seconds()
     )
@@ -335,7 +341,75 @@ def _ensure_setting_value(conn: sqlite3.Connection, key: str, value: str) -> str
     return value
 
 
-def _ensure_db(path: str) -> None:
+def _user_name(uid: int) -> str:
+    try:
+        return pwd.getpwuid(uid).pw_name
+    except KeyError:
+        return str(uid)
+
+
+def _group_name(gid: int) -> str:
+    try:
+        return grp.getgrgid(gid).gr_name
+    except KeyError:
+        return str(gid)
+
+
+def _access_flags(path: str) -> str:
+    return "".join(
+        [
+            "r" if os.access(path, os.R_OK) else "-",
+            "w" if os.access(path, os.W_OK) else "-",
+            "x" if os.access(path, os.X_OK) else "-",
+        ]
+    )
+
+
+def _log_path_info(label: str, path: str) -> None:
+    exists = os.path.exists(path) or os.path.islink(path)
+    is_file = os.path.isfile(path)
+    is_dir = os.path.isdir(path)
+    is_link = os.path.islink(path)
+    mode = "n/a"
+    owner = "n/a"
+    group = "n/a"
+    if exists or is_link:
+        try:
+            info = os.lstat(path)
+            mode = oct(stat.S_IMODE(info.st_mode))
+            owner = _user_name(info.st_uid)
+            group = _group_name(info.st_gid)
+        except OSError:
+            pass
+    logger.debug(
+        "DB path info label=%s path=%s exists=%s is_file=%s is_dir=%s is_link=%s mode=%s owner=%s group=%s access=%s",
+        label,
+        path,
+        exists,
+        is_file,
+        is_dir,
+        is_link,
+        mode,
+        owner,
+        group,
+        _access_flags(path),
+    )
+
+
+def _log_db_path_diagnostics(path: str) -> None:
+    logger.debug(
+        "DB path diagnostics user=%s uid=%s group=%s gid=%s",
+        _user_name(os.geteuid()),
+        os.geteuid(),
+        _group_name(os.getegid()),
+        os.getegid(),
+    )
+    _log_path_info("db_path", path)
+    parent = os.path.dirname(path) or "."
+    _log_path_info("db_parent", parent)
+
+
+def _ensure_db(path: str, *, log_exception: bool = True) -> None:
     if os.path.isdir(path):
         raise ConfigError(f"db_path points to a directory: {path}")
     directory = os.path.dirname(path)
@@ -438,7 +512,11 @@ def _ensure_db(path: str) -> None:
                     ("admin", admin_hash, None),
                 )
     except sqlite3.OperationalError as exc:
-        logger.exception("DB init failed for path=%s", path)
+        _log_db_path_diagnostics(path)
+        if log_exception:
+            logger.exception("DB init failed for path=%s", path)
+        else:
+            logger.debug("DB init failed for path=%s", path)
         raise ConfigError(f"Unable to open db_path {path}: {exc}") from exc
 
 
@@ -1763,7 +1841,11 @@ def _purge_expired_tokens() -> None:
     path = app.state.db_path
     if not path:
         return
-    _ensure_db(path)
+    try:
+        _ensure_db(path, log_exception=False)
+    except ConfigError as exc:
+        logger.warning("Token cleanup skipped: %s", exc)
+        return
     now = _now().isoformat()
     with _open_db(path) as conn:
         conn.execute(
