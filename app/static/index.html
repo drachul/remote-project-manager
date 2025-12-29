@@ -53,60 +53,11 @@
             <div class="panel-actions">
               <button class="btn subtle" id="openBackupSchedule">Backup schedule</button>
               <button class="btn subtle" id="openCreateProject">Create</button>
-              <button class="btn subtle" id="selectAllProjects">Select all</button>
-              <button class="btn subtle" id="clearProjects">Clear</button>
             </div>
           </div>
           <div class="project-toolbar">
-            <div class="project-sort">
-              <label class="control">
-                Sort by
-                <select id="projectSortBy">
-                  <option value="name">Name</option>
-                  <option value="status">Status</option>
-                  <option value="updates">Updates</option>
-                  <option value="backup">Last backup</option>
-                </select>
-              </label>
-              <label class="control">
-                Order
-                <select id="projectSortDir">
-                  <option value="asc">Ascending</option>
-                  <option value="desc">Descending</option>
-                </select>
-              </label>
-            </div>
-            <button class="btn subtle" id="toggleProjectFilters" type="button">
-              <span id="projectFiltersLabel">Filters</span>
-              <span class="filter-badge hidden" id="projectFilterBadge">0</span>
-            </button>
-          </div>
-          <div class="project-filters hidden" id="projectFilters">
-            <label class="control project-filter-hosts">
-              Hosts
-              <select id="projectFilterHosts" multiple size="3"></select>
-            </label>
-            <label class="control">
-              Status
-              <select id="projectFilterStatus">
-                <option value="all">All</option>
-                <option value="up">Up</option>
-                <option value="degraded">Degraded</option>
-                <option value="down">Down</option>
-                <option value="unknown">Unknown</option>
-                <option value="sleeping">Sleeping</option>
-              </select>
-            </label>
-            <label class="control">
-              Updates
-              <select id="projectFilterUpdates">
-                <option value="all">All</option>
-                <option value="yes">Available</option>
-                <option value="no">None</option>
-              </select>
-            </label>
-            <label class="control project-filter-name">
-              Name
+            <label class="control project-search">
+              Project
               <input
                 type="text"
                 id="projectFilterName"
@@ -116,8 +67,10 @@
             </label>
             <button class="btn subtle filter-clear" id="clearProjectFilters" type="button">
               Clear filters
+              <span class="filter-count hidden" id="projectFilterCount">0</span>
             </button>
           </div>
+          
           <div class="bulk-actions hidden" id="bulkActions">
             <button class="btn ghost bulk-action" data-bulk-action="start">Start</button>
             <button class="btn ghost bulk-action" data-bulk-action="stop">Stop</button>
@@ -131,9 +84,107 @@
               <div class="progress-bar" id="bulkProgressBar"></div>
             </div>
           </div>
-          <ul class="list" id="projectList">
-            <li class="list-row empty">Select a host to see projects.</li>
-          </ul>
+          <table class="project-table">
+            <thead>
+              <tr>
+                <th class="col-select">
+                  <label class="table-select-all" title="Select all / clear">
+                    <input type="checkbox" id="projectSelectToggle" aria-label="Select all projects" />
+                  </label>
+                </th>
+                <th class="col-project">
+                  <div class="header-controls">
+                    <button class="sort-header" data-sort="name" type="button">
+                      <span>Project</span>
+                      <span class="sort-indicator"></span>
+                    </button>
+                    <button class="filter-toggle" data-filter="hosts" type="button" aria-label="Filter hosts" title="Filter hosts">
+                      <span class="material-symbols-outlined action-icon">filter_list</span>
+                    </button>
+                    <div class="filter-menu hidden" data-filter-menu="hosts">
+                      <label class="control">
+                        Hosts
+                        <select id="headerFilterHosts" multiple size="5"></select>
+                      </label>
+                      <button class="btn ghost filter-clear" type="button" data-filter-clear="hosts">Clear</button>
+                    </div>
+                  </div>
+                </th>
+                <th class="col-status">
+                  <div class="header-controls">
+                    <button class="sort-header" data-sort="status" type="button">
+                      <span>Status</span>
+                      <span class="sort-indicator"></span>
+                    </button>
+                    <button class="filter-toggle" data-filter="status" type="button" aria-label="Filter status" title="Filter status">
+                      <span class="material-symbols-outlined action-icon">filter_list</span>
+                    </button>
+                    <div class="filter-menu hidden" data-filter-menu="status">
+                      <label class="control">
+                        Status
+                        <select id="headerFilterStatus">
+                          <option value="all">All</option>
+                          <option value="up">Up</option>
+                          <option value="degraded">Degraded</option>
+                          <option value="down">Down</option>
+                          <option value="unknown">Unknown</option>
+                          <option value="sleeping">Sleeping</option>
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+                </th>
+                <th class="col-updates">
+                  <div class="header-controls">
+                    <button class="sort-header" data-sort="updates" type="button">
+                      <span>Update</span>
+                      <span class="sort-indicator"></span>
+                    </button>
+                    <button class="filter-toggle" data-filter="updates" type="button" aria-label="Filter updates" title="Filter updates">
+                      <span class="material-symbols-outlined action-icon">filter_list</span>
+                    </button>
+                    <div class="filter-menu hidden" data-filter-menu="updates">
+                      <label class="control">
+                        Updates
+                        <select id="headerFilterUpdates">
+                          <option value="all">All</option>
+                          <option value="yes">Available</option>
+                          <option value="no">None</option>
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+                </th>
+                <th class="col-backup">
+                  <div class="header-controls">
+                    <button class="sort-header" data-sort="backup" type="button">
+                      <span>Backup?</span>
+                      <span class="sort-indicator"></span>
+                    </button>
+                    <button class="filter-toggle" data-filter="backup" type="button" aria-label="Filter backups" title="Filter backups">
+                      <span class="material-symbols-outlined action-icon">filter_list</span>
+                    </button>
+                    <div class="filter-menu hidden" data-filter-menu="backup">
+                      <label class="control">
+                        Backup
+                        <select id="headerFilterBackup">
+                          <option value="all">All</option>
+                          <option value="enabled">Enabled</option>
+                          <option value="disabled">Disabled</option>
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+                </th>
+                <th class="col-actions">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="projectList">
+              <tr class="list-row empty">
+                <td colspan="6">Select a host to see projects.</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </section>
     </div>
@@ -190,73 +241,86 @@
     </template>
 
     <template id="projectRowTemplate">
-      <li class="list-row project-row">
-        <div class="project-header">
-          <label class="checkbox">
-            <input class="project-checkbox" type="checkbox" />
-            <span class="checkbox-label">
-            <span class="row-title">
-              <span class="project-name"></span>
-              <span class="icon-badges">
-                <span class="material-symbols-outlined status-icon" title="Status"></span>
-                <span class="material-symbols-outlined updates-icon" title="Updates"></span>
-                <span class="material-symbols-outlined sleep-icon" title="Sleeping"></span>
-              </span>
-              <label class="toggle backup-toggle">
-                <input class="backup-checkbox" type="checkbox" />
-                <span>Backup?</span>
-              </label>
-              <button class="btn ghost project-details" aria-label="Project details" title="Project details">
-                <span class="material-symbols-outlined action-icon">info</span>
-              </button>
-            </span>
-          </span>
-        </label>
-          <div class="row-actions">
-            <button class="btn ghost project-action" data-action="start" aria-label="Start project" title="Start project (docker compose start)">
-              <span class="material-symbols-outlined action-icon action-label">play_arrow</span>
-            </button>
-            <button class="btn ghost project-action" data-action="stop" aria-label="Stop project" title="Stop project (docker compose stop)">
-              <span class="material-symbols-outlined action-icon action-label">stop</span>
-            </button>
-            <button class="btn ghost project-action" data-action="restart" aria-label="Restart project" title="Restart project (docker compose restart)">
-              <span class="material-symbols-outlined action-icon action-label">replay</span>
-            </button>
-            <button class="btn ghost project-action" data-action="update" aria-label="Update project" title="Update project images">
-              <span class="material-symbols-outlined action-icon action-label">system_update_alt</span>
-            </button>
-            <button class="btn ghost project-action" data-action="backup" aria-label="Backup project" title="Backup project">
-              <span class="material-symbols-outlined action-icon action-label">backup</span>
-            </button>
-            <button class="btn ghost project-action" data-action="refresh" aria-label="Refresh project status" title="Refresh project status">
-              <span class="material-symbols-outlined action-icon action-label">refresh</span>
-            </button>
-            <button class="btn ghost logs" aria-label="Logs" title="View logs">
-              <span class="material-symbols-outlined action-icon">article</span>
-            </button>
-            <button class="btn ghost compose" aria-label="Compose file" title="Edit compose file">
-              <span class="material-symbols-outlined action-icon">edit_document</span>
+      <tr class="list-row project-row">
+        <td class="project-cell project-select">
+          <input class="project-checkbox" type="checkbox" aria-label="Select project" />
+        </td>
+        <td class="project-cell project-main">
+          <div class="row-title project-title">
+            <span class="project-name"></span>
+            <button class="btn ghost project-details" aria-label="Project details" title="Project details">
+              <span class="material-symbols-outlined action-icon">info</span>
             </button>
           </div>
-          <button class="btn ghost project-delete" title="Delete project" aria-label="Delete project">
-            <span class="material-symbols-outlined action-icon delete-icon">delete</span>
-          </button>
-        </div>
-        <div class="project-extra">
-          <div class="services-summary">
-            <span class="services-text"></span>
-            <span class="material-symbols-outlined services-caret">expand_more</span>
-          </div>
-          <div class="errors"></div>
-          <div class="services-panel hidden">
-            <div class="services-header">
-              <span>Services</span>
-              <span class="services-count"></span>
+          <div class="project-extra">
+            <div class="services-summary">
+              <span class="services-text"></span>
+              <span class="material-symbols-outlined services-caret">expand_more</span>
             </div>
-            <ul class="services-list"></ul>
+            <div class="errors"></div>
+            <div class="services-panel hidden">
+              <div class="services-header">
+                <span>Services</span>
+                <span class="services-count"></span>
+              </div>
+              <ul class="services-list"></ul>
+            </div>
           </div>
-        </div>
-      </li>
+        </td>
+        <td class="project-cell project-status">
+          <div class="status-badges">
+            <span class="material-symbols-outlined status-icon" title="Status"></span>
+            <span class="material-symbols-outlined sleep-icon" title="Sleeping"></span>
+          </div>
+        </td>
+        <td class="project-cell project-updates">
+          <span class="material-symbols-outlined updates-icon" title="Updates"></span>
+        </td>
+        <td class="project-cell project-backup">
+          <label class="toggle backup-toggle">
+            <input class="backup-checkbox" type="checkbox" aria-label="Backup enabled" />
+            <span>Backup?</span>
+          </label>
+        </td>
+        <td class="project-cell project-actions">
+          <div class="action-menu">
+            <button class="btn ghost action-menu-toggle" aria-label="Actions" title="Actions">
+              <span class="material-symbols-outlined action-icon">menu</span>
+            </button>
+            <div class="action-menu-panel hidden">
+              <div class="row-actions">
+                <button class="btn ghost project-action" data-action="start" aria-label="Start project" title="Start project (docker compose start)">
+                  <span class="material-symbols-outlined action-icon action-label">play_arrow</span>
+                </button>
+                <button class="btn ghost project-action" data-action="stop" aria-label="Stop project" title="Stop project (docker compose stop)">
+                  <span class="material-symbols-outlined action-icon action-label">stop</span>
+                </button>
+                <button class="btn ghost project-action" data-action="restart" aria-label="Restart project" title="Restart project (docker compose restart)">
+                  <span class="material-symbols-outlined action-icon action-label">replay</span>
+                </button>
+                <button class="btn ghost project-action" data-action="update" aria-label="Update project" title="Update project images">
+                  <span class="material-symbols-outlined action-icon action-label">system_update_alt</span>
+                </button>
+                <button class="btn ghost project-action" data-action="backup" aria-label="Backup project" title="Backup project">
+                  <span class="material-symbols-outlined action-icon action-label">backup</span>
+                </button>
+                <button class="btn ghost project-action" data-action="refresh" aria-label="Refresh project status" title="Refresh project status">
+                  <span class="material-symbols-outlined action-icon action-label">refresh</span>
+                </button>
+                <button class="btn ghost logs" aria-label="Logs" title="View logs">
+                  <span class="material-symbols-outlined action-icon">article</span>
+                </button>
+                <button class="btn ghost compose" aria-label="Compose file" title="Edit compose file">
+                  <span class="material-symbols-outlined action-icon">edit_document</span>
+                </button>
+                <button class="btn ghost project-delete" title="Delete project" aria-label="Delete project">
+                  <span class="material-symbols-outlined action-icon delete-icon">delete</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </td>
+      </tr>
     </template>
 
     <template id="hostConfigTemplate">
