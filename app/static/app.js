@@ -8,6 +8,17 @@ const clearHostsBtn = document.getElementById("clearHosts");
 const selectAllProjectsBtn = document.getElementById("selectAllProjects");
 const clearProjectsBtn = document.getElementById("clearProjects");
 const projectCount = document.getElementById("projectCount");
+const projectSortBy = document.getElementById("projectSortBy");
+const projectSortDir = document.getElementById("projectSortDir");
+const projectFilterStatus = document.getElementById("projectFilterStatus");
+const projectFilterUpdates = document.getElementById("projectFilterUpdates");
+const projectFilterName = document.getElementById("projectFilterName");
+const projectFilterHosts = document.getElementById("projectFilterHosts");
+const clearProjectFiltersBtn = document.getElementById("clearProjectFilters");
+const projectFilters = document.getElementById("projectFilters");
+const toggleProjectFiltersBtn = document.getElementById("toggleProjectFilters");
+const projectFilterBadge = document.getElementById("projectFilterBadge");
+const projectFiltersLabel = document.getElementById("projectFiltersLabel");
 const bulkActions = document.getElementById("bulkActions");
 const bulkProgress = document.getElementById("bulkProgress");
 const bulkProgressText = document.getElementById("bulkProgressText");
@@ -116,13 +127,20 @@ const state = {
   authToken: null,
   initialized: false,
   configTabsInit: false,
-  selectedHosts: new Set(),
   selectedProjects: new Set(),
   backupCancelled: new Set(),
   actionProgress: new Map(),
   hostActionProgress: new Map(),
   serviceActionProgress: new Map(),
   authExpiredNotified: false,
+  projectFilters: {
+    hosts: [],
+    sortBy: "name",
+    sortDir: "asc",
+    status: "all",
+    updates: "all",
+    query: "",
+  },
 };
 
 const composeState = {
@@ -335,6 +353,105 @@ function updateIntervalVisibility() {
   intervalUpdateInput.disabled = !show;
 }
 
+function updateProjectFilterState() {
+  if (projectFilterHosts) {
+    state.projectFilters.hosts = Array.from(projectFilterHosts.selectedOptions).map(
+      (option) => option.value
+    );
+  }
+  if (projectSortBy) {
+    state.projectFilters.sortBy = projectSortBy.value;
+  }
+  if (projectSortDir) {
+    state.projectFilters.sortDir = projectSortDir.value;
+  }
+  if (projectFilterStatus) {
+    state.projectFilters.status = projectFilterStatus.value;
+  }
+  if (projectFilterUpdates) {
+    state.projectFilters.updates = projectFilterUpdates.value;
+  }
+  if (projectFilterName) {
+    state.projectFilters.query = projectFilterName.value || "";
+  }
+  updateProjectFilterIndicator();
+}
+
+function updateProjectFilterIndicator() {
+  if (!toggleProjectFiltersBtn) {
+    return;
+  }
+  const activeCount =
+    (state.projectFilters.hosts && state.projectFilters.hosts.length ? 1 : 0) +
+    (state.projectFilters.status !== "all" ? 1 : 0) +
+    (state.projectFilters.updates !== "all" ? 1 : 0) +
+    (state.projectFilters.query.trim() !== "" ? 1 : 0);
+  const filtersActive = activeCount > 0;
+  toggleProjectFiltersBtn.classList.toggle("active", filtersActive);
+  if (projectFilterBadge) {
+    projectFilterBadge.textContent = String(activeCount);
+    projectFilterBadge.classList.toggle("hidden", activeCount === 0);
+  }
+}
+
+function applyProjectFilterDefaults() {
+  state.projectFilters = {
+    hosts: [],
+    sortBy: "name",
+    sortDir: "asc",
+    status: "all",
+    updates: "all",
+    query: "",
+  };
+  if (projectFilterHosts) {
+    Array.from(projectFilterHosts.options).forEach((option) => {
+      option.selected = false;
+    });
+  }
+  if (projectSortBy) {
+    projectSortBy.value = state.projectFilters.sortBy;
+  }
+  if (projectSortDir) {
+    projectSortDir.value = state.projectFilters.sortDir;
+  }
+  if (projectFilterStatus) {
+    projectFilterStatus.value = state.projectFilters.status;
+  }
+  if (projectFilterUpdates) {
+    projectFilterUpdates.value = state.projectFilters.updates;
+  }
+  if (projectFilterName) {
+    projectFilterName.value = state.projectFilters.query;
+  }
+  if (projectFilters && toggleProjectFiltersBtn) {
+    projectFilters.classList.add("hidden");
+    if (projectFiltersLabel) {
+      projectFiltersLabel.textContent = "Filters";
+    } else {
+      toggleProjectFiltersBtn.textContent = "Filters";
+    }
+  }
+  updateProjectFilterIndicator();
+}
+
+function renderHostFilterOptions() {
+  if (!projectFilterHosts) {
+    return;
+  }
+  const available = new Set(state.hosts.map((host) => host.host_id));
+  state.projectFilters.hosts = state.projectFilters.hosts.filter((hostId) =>
+    available.has(hostId)
+  );
+  const selected = new Set(state.projectFilters.hosts);
+  projectFilterHosts.innerHTML = "";
+  state.hosts.forEach((host) => {
+    const option = document.createElement("option");
+    option.value = host.host_id;
+    option.textContent = host.host_id;
+    option.selected = selected.has(host.host_id);
+    projectFilterHosts.appendChild(option);
+  });
+}
 function createBadge(label, className) {
   const badge = document.createElement("span");
   badge.className = `badge ${className}`;
@@ -2162,8 +2279,8 @@ function getStateByHost() {
 }
 
 function getActiveHostIds() {
-  if (state.selectedHosts.size) {
-    return Array.from(state.selectedHosts);
+  if (state.projectFilters.hosts && state.projectFilters.hosts.length) {
+    return state.projectFilters.hosts;
   }
   return state.hosts.map((host) => host.host_id);
 }
@@ -2220,6 +2337,113 @@ function buildProjectEntries() {
   });
 
   return entries;
+}
+
+function normalizeProjectStatus(entry) {
+  if (entry.sleeping) {
+    return "sleeping";
+  }
+  return entry.status || "unknown";
+}
+
+function statusRank(status) {
+  switch (status) {
+    case "up":
+      return 0;
+    case "degraded":
+      return 1;
+    case "down":
+      return 2;
+    case "sleeping":
+      return 3;
+    case "unknown":
+    default:
+      return 4;
+  }
+}
+
+function updateRank(value) {
+  if (value === true) return 0;
+  if (value === false) return 1;
+  return 2;
+}
+
+function applyProjectFilters(entries) {
+  const query = state.projectFilters.query.trim().toLowerCase();
+  const statusFilter = state.projectFilters.status;
+  const updatesFilter = state.projectFilters.updates;
+  return entries.filter((entry) => {
+    if (query) {
+      const nameMatch = entry.projectName.toLowerCase().includes(query);
+      const pathMatch = (entry.path || "").toLowerCase().includes(query);
+      if (!nameMatch && !pathMatch) {
+        return false;
+      }
+    }
+    if (statusFilter !== "all") {
+      if (statusFilter === "sleeping") {
+        if (!entry.sleeping) {
+          return false;
+        }
+      } else if (normalizeProjectStatus(entry) !== statusFilter) {
+        return false;
+      }
+    }
+    if (updatesFilter !== "all") {
+      if (updatesFilter === "yes" && entry.updatesAvailable !== true) {
+        return false;
+      }
+      if (updatesFilter === "no" && entry.updatesAvailable !== false) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+function sortProjectEntries(entries) {
+  const sortBy = state.projectFilters.sortBy;
+  const sortDir = state.projectFilters.sortDir === "desc" ? -1 : 1;
+  const sorted = [...entries];
+  sorted.sort((a, b) => {
+    let cmp = 0;
+    if (sortBy === "status") {
+      cmp =
+        statusRank(normalizeProjectStatus(a)) -
+        statusRank(normalizeProjectStatus(b));
+    } else if (sortBy === "updates") {
+      cmp = updateRank(a.updatesAvailable) - updateRank(b.updatesAvailable);
+    } else if (sortBy === "backup") {
+      const aTime = Date.parse(a.lastBackupAt || "");
+      const bTime = Date.parse(b.lastBackupAt || "");
+      const aValid = !Number.isNaN(aTime);
+      const bValid = !Number.isNaN(bTime);
+      if (aValid && bValid) {
+        cmp = aTime - bTime;
+      } else if (aValid) {
+        return -1;
+      } else if (bValid) {
+        return 1;
+      } else {
+        cmp = 0;
+      }
+    } else {
+      cmp = a.projectName.localeCompare(b.projectName);
+    }
+    if (cmp === 0) {
+      cmp = a.projectName.localeCompare(b.projectName);
+    }
+    return cmp * sortDir;
+  });
+  return sorted;
+}
+
+function getVisibleProjectEntries() {
+  return sortProjectEntries(applyProjectFilters(buildProjectEntries()));
+}
+
+function countSelectedVisible(entries) {
+  return entries.filter((entry) => state.selectedProjects.has(entry.key)).length;
 }
 
 function syncProjectSelection(availableKeys) {
@@ -2324,11 +2548,6 @@ function renderHostList() {
 
   const hostIds = new Set(state.hosts.map((host) => host.host_id));
   const stateByHost = getStateByHost();
-  state.selectedHosts.forEach((hostId) => {
-    if (!hostIds.has(hostId)) {
-      state.selectedHosts.delete(hostId);
-    }
-  });
   state.hostActionProgress.forEach((_, hostId) => {
     if (!hostIds.has(hostId)) {
       state.hostActionProgress.delete(hostId);
@@ -2337,19 +2556,9 @@ function renderHostList() {
 
   state.hosts.forEach((host) => {
     const row = hostRowTemplate.content.firstElementChild.cloneNode(true);
-    const checkbox = row.querySelector(".host-checkbox");
     row.querySelector(".host-name").textContent = host.host_id;
     const projectCountText = host.projects?.length ?? Object.keys(host.project_paths || {}).length;
     row.querySelector(".host-meta").textContent = `${host.user}@${host.host}:${host.port} • ${projectCountText} projects`;
-    checkbox.checked = state.selectedHosts.has(host.host_id);
-    checkbox.addEventListener("change", () => {
-      if (checkbox.checked) {
-        state.selectedHosts.add(host.host_id);
-      } else {
-        state.selectedHosts.delete(host.host_id);
-      }
-      renderProjectList();
-    });
 
     const refreshBtn = row.querySelector(".refresh-host");
     refreshBtn.addEventListener("click", () =>
@@ -2415,13 +2624,14 @@ function renderHostList() {
 
 function renderProjectList() {
   projectList.innerHTML = "";
-  const entries = buildProjectEntries();
-  const availableKeys = new Set(entries.map((entry) => entry.key));
+  const allEntries = buildProjectEntries();
+  const visibleEntries = sortProjectEntries(applyProjectFilters(allEntries));
+  const availableKeys = new Set(allEntries.map((entry) => entry.key));
   syncProjectSelection(availableKeys);
   syncBackupCancelled(availableKeys);
   syncActionProgress(availableKeys);
   const availableServiceKeys = new Set();
-  entries.forEach((entry) => {
+  allEntries.forEach((entry) => {
     entry.services.forEach((service) => {
       const serviceName = service.id || "unknown";
       availableServiceKeys.add(serviceActionKey(entry.hostId, entry.projectName, serviceName));
@@ -2429,17 +2639,21 @@ function renderProjectList() {
   });
   syncServiceActionProgress(availableServiceKeys);
 
-  projectCount.textContent = `${entries.length} projects • ${state.selectedProjects.size} selected`;
+  projectCount.textContent = `${visibleEntries.length} projects • ${countSelectedVisible(
+    visibleEntries
+  )} selected`;
 
-  if (!entries.length) {
+  if (!visibleEntries.length) {
     const empty = document.createElement("li");
     empty.className = "list-row empty";
-    empty.textContent = "No projects available.";
+    empty.textContent = allEntries.length
+      ? "No projects match filters."
+      : "No projects available.";
     projectList.appendChild(empty);
     return;
   }
 
-    entries.forEach((entry) => {
+    visibleEntries.forEach((entry) => {
       const row = projectRowTemplate.content.firstElementChild.cloneNode(true);
       row.dataset.projectKey = entry.key;
       const checkbox = row.querySelector(".project-checkbox");
@@ -2450,7 +2664,9 @@ function renderProjectList() {
       } else {
         state.selectedProjects.delete(entry.key);
       }
-      projectCount.textContent = `${entries.length} projects • ${state.selectedProjects.size} selected`;
+      projectCount.textContent = `${visibleEntries.length} projects • ${countSelectedVisible(
+        visibleEntries
+      )} selected`;
       updateBulkVisibility();
     });
 
@@ -3016,17 +3232,29 @@ function runServiceActionStream(hostId, projectName, serviceName, action, onStep
 }
 
 function selectAllHosts() {
-  state.selectedHosts = new Set(state.hosts.map((host) => host.host_id));
-  renderLists();
+  if (!projectFilterHosts) {
+    return;
+  }
+  state.projectFilters.hosts = state.hosts.map((host) => host.host_id);
+  Array.from(projectFilterHosts.options).forEach((option) => {
+    option.selected = true;
+  });
+  renderProjectList();
 }
 
 function clearHosts() {
-  state.selectedHosts = new Set();
-  renderLists();
+  if (!projectFilterHosts) {
+    return;
+  }
+  state.projectFilters.hosts = [];
+  Array.from(projectFilterHosts.options).forEach((option) => {
+    option.selected = false;
+  });
+  renderProjectList();
 }
 
 function selectAllProjects() {
-  const entries = buildProjectEntries();
+  const entries = getVisibleProjectEntries();
   state.selectedProjects = new Set(entries.map((entry) => entry.key));
   renderProjectList();
 }
@@ -3039,6 +3267,12 @@ function clearProjects() {
 function getSelectedProjectEntries() {
   const entries = buildProjectEntries();
   return entries.filter((entry) => state.selectedProjects.has(entry.key));
+}
+
+function clearProjectFilters() {
+  applyProjectFilterDefaults();
+  updateProjectFilterState();
+  renderProjectList();
 }
 
 async function runProjectAction(button, hostId, projectName, action) {
@@ -3234,7 +3468,8 @@ function updateBulkVisibility() {
   if (!bulkActions) {
     return;
   }
-  if (state.selectedProjects.size > 1) {
+  const selectedCount = countSelectedVisible(getVisibleProjectEntries());
+  if (selectedCount > 1) {
     bulkActions.classList.remove("hidden");
   } else {
     bulkActions.classList.add("hidden");
@@ -3532,12 +3767,23 @@ async function loadHosts() {
     }
   }
   state.hosts = hostData;
+  renderHostFilterOptions();
 }
 
 async function initApp(forceReload = false) {
   if (state.initialized && !forceReload) {
     return;
   }
+  updateProjectFilterState();
+  if (projectFilters && toggleProjectFiltersBtn) {
+    projectFilters.classList.add("hidden");
+    if (projectFiltersLabel) {
+      projectFiltersLabel.textContent = "Filters";
+    } else {
+      toggleProjectFiltersBtn.textContent = "Filters";
+    }
+  }
+  updateProjectFilterIndicator();
   try {
     await loadHosts();
     await loadBackupScheduleStatus();
@@ -3782,10 +4028,64 @@ logsTailInput.addEventListener("keydown", (event) => {
 });
 logsShowStdout.addEventListener("change", updateLogsFilter);
 logsShowStderr.addEventListener("change", updateLogsFilter);
-selectAllHostsBtn.addEventListener("click", selectAllHosts);
-clearHostsBtn.addEventListener("click", clearHosts);
+if (selectAllHostsBtn) {
+  selectAllHostsBtn.addEventListener("click", selectAllHosts);
+}
+if (clearHostsBtn) {
+  clearHostsBtn.addEventListener("click", clearHosts);
+}
 selectAllProjectsBtn.addEventListener("click", selectAllProjects);
 clearProjectsBtn.addEventListener("click", clearProjects);
+if (projectSortBy) {
+  projectSortBy.addEventListener("change", () => {
+    updateProjectFilterState();
+    renderProjectList();
+  });
+}
+if (projectSortDir) {
+  projectSortDir.addEventListener("change", () => {
+    updateProjectFilterState();
+    renderProjectList();
+  });
+}
+if (projectFilterStatus) {
+  projectFilterStatus.addEventListener("change", () => {
+    updateProjectFilterState();
+    renderProjectList();
+  });
+}
+if (projectFilterUpdates) {
+  projectFilterUpdates.addEventListener("change", () => {
+    updateProjectFilterState();
+    renderProjectList();
+  });
+}
+if (projectFilterName) {
+  projectFilterName.addEventListener("input", () => {
+    updateProjectFilterState();
+    renderProjectList();
+  });
+}
+if (projectFilterHosts) {
+  projectFilterHosts.addEventListener("change", () => {
+    updateProjectFilterState();
+    renderProjectList();
+  });
+}
+if (clearProjectFiltersBtn) {
+  clearProjectFiltersBtn.addEventListener("click", clearProjectFilters);
+}
+if (toggleProjectFiltersBtn && projectFilters) {
+  toggleProjectFiltersBtn.addEventListener("click", () => {
+    projectFilters.classList.toggle("hidden");
+    const label = projectFilters.classList.contains("hidden") ? "Filters" : "Hide filters";
+    if (projectFiltersLabel) {
+      projectFiltersLabel.textContent = label;
+    } else {
+      toggleProjectFiltersBtn.textContent = label;
+    }
+  });
+}
 document.querySelectorAll(".bulk-action").forEach((button) => {
   button.addEventListener("click", () => {
     const action = button.dataset.bulkAction;

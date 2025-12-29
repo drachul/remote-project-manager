@@ -11,6 +11,7 @@ import sqlite3
 import string
 import stat
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -99,6 +100,8 @@ STATIC_DIR = BASE_DIR / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 logger = logging.getLogger("rpm")
 TOKEN_CLEANUP_INTERVAL_SECONDS = 60
+DB_OPEN_ATTEMPTS = int(os.getenv("DB_OPEN_ATTEMPTS", "5"))
+DB_OPEN_DELAY_SECONDS = float(os.getenv("DB_OPEN_DELAY_SECONDS", "0.2"))
 
 
 @app.get("/")
@@ -341,6 +344,35 @@ def _ensure_setting_value(conn: sqlite3.Connection, key: str, value: str) -> str
     return value
 
 
+def _connect_db(path: str) -> sqlite3.Connection:
+    attempts = max(1, DB_OPEN_ATTEMPTS)
+    delay = max(0.0, DB_OPEN_DELAY_SECONDS)
+    last_exc: Optional[sqlite3.OperationalError] = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return sqlite3.connect(path, timeout=5)
+        except sqlite3.OperationalError as exc:
+            last_exc = exc
+            message = str(exc).lower()
+            if "unable to open database file" not in message:
+                _log_db_path_diagnostics(path)
+                raise
+            logger.debug(
+                "DB open failed path=%s attempt=%s/%s error=%s",
+                path,
+                attempt,
+                attempts,
+                exc,
+            )
+            if attempt < attempts and delay > 0:
+                time.sleep(delay * attempt)
+    if last_exc:
+        _log_db_path_diagnostics(path)
+        logger.debug("DB open failed after %s attempts: %s", attempts, last_exc)
+        raise last_exc
+    return sqlite3.connect(path, timeout=5)
+
+
 def _user_name(uid: int) -> str:
     try:
         return pwd.getpwuid(uid).pw_name
@@ -407,6 +439,17 @@ def _log_db_path_diagnostics(path: str) -> None:
     _log_path_info("db_path", path)
     parent = os.path.dirname(path) or "."
     _log_path_info("db_parent", parent)
+    try:
+        stats = os.statvfs(parent)
+        free_bytes = stats.f_bavail * stats.f_frsize
+        total_bytes = stats.f_blocks * stats.f_frsize
+        logger.debug(
+            "DB path filesystem free_bytes=%s total_bytes=%s",
+            free_bytes,
+            total_bytes,
+        )
+    except OSError:
+        logger.debug("DB path filesystem stats unavailable for %s", parent)
 
 
 def _ensure_db(path: str, *, log_exception: bool = True) -> None:
@@ -416,7 +459,7 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
     if directory:
         os.makedirs(directory, exist_ok=True)
     try:
-        with sqlite3.connect(path) as conn:
+        with _connect_db(path) as conn:
             conn.execute("PRAGMA foreign_keys = ON")
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
@@ -529,7 +572,7 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition
 
 
 def _read_interval_setting(path: str, key: str) -> Optional[int]:
-    with sqlite3.connect(path) as conn:
+    with _open_db(path) as conn:
         row = conn.execute(
             "SELECT value FROM settings WHERE key = ?", (key,)
         ).fetchone()
@@ -542,7 +585,7 @@ def _read_interval_setting(path: str, key: str) -> Optional[int]:
 
 
 def _write_interval_setting(path: str, key: str, value: int) -> None:
-    with sqlite3.connect(path) as conn:
+    with _open_db(path) as conn:
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -551,7 +594,7 @@ def _write_interval_setting(path: str, key: str, value: int) -> None:
 
 
 def _read_setting(path: str, key: str) -> Optional[str]:
-    with sqlite3.connect(path) as conn:
+    with _open_db(path) as conn:
         row = conn.execute(
             "SELECT value FROM settings WHERE key = ?", (key,)
         ).fetchone()
@@ -561,7 +604,7 @@ def _read_setting(path: str, key: str) -> Optional[str]:
 
 
 def _write_setting(path: str, key: str, value: Optional[str]) -> None:
-    with sqlite3.connect(path) as conn:
+    with _open_db(path) as conn:
         if value is None:
             conn.execute("DELETE FROM settings WHERE key = ?", (key,))
             return
@@ -801,7 +844,7 @@ def _set_project_sleeping(host_id: str, project: str, sleeping: bool) -> None:
         )
 
 def _open_db(path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = _connect_db(path)
     conn.execute("PRAGMA foreign_keys = ON")
     if logger.isEnabledFor(logging.DEBUG):
         conn.set_trace_callback(lambda statement: logger.debug("SQL: %s", statement))

@@ -36,11 +36,7 @@
           <div class="panel-head">
             <div>
               <h2>Hosts</h2>
-              <div class="panel-sub">Select hosts to filter the project list.</div>
-            </div>
-            <div class="panel-actions host-panel-actions">
-              <button class="btn subtle" id="selectAllHosts">Select all</button>
-              <button class="btn subtle" id="clearHosts">Clear</button>
+              <div class="panel-sub">Manage hosts and quick actions.</div>
             </div>
           </div>
           <ul class="list" id="hostList">
@@ -60,6 +56,67 @@
               <button class="btn subtle" id="selectAllProjects">Select all</button>
               <button class="btn subtle" id="clearProjects">Clear</button>
             </div>
+          </div>
+          <div class="project-toolbar">
+            <div class="project-sort">
+              <label class="control">
+                Sort by
+                <select id="projectSortBy">
+                  <option value="name">Name</option>
+                  <option value="status">Status</option>
+                  <option value="updates">Updates</option>
+                  <option value="backup">Last backup</option>
+                </select>
+              </label>
+              <label class="control">
+                Order
+                <select id="projectSortDir">
+                  <option value="asc">Ascending</option>
+                  <option value="desc">Descending</option>
+                </select>
+              </label>
+            </div>
+            <button class="btn subtle" id="toggleProjectFilters" type="button">
+              <span id="projectFiltersLabel">Filters</span>
+              <span class="filter-badge hidden" id="projectFilterBadge">0</span>
+            </button>
+          </div>
+          <div class="project-filters hidden" id="projectFilters">
+            <label class="control project-filter-hosts">
+              Hosts
+              <select id="projectFilterHosts" multiple size="3"></select>
+            </label>
+            <label class="control">
+              Status
+              <select id="projectFilterStatus">
+                <option value="all">All</option>
+                <option value="up">Up</option>
+                <option value="degraded">Degraded</option>
+                <option value="down">Down</option>
+                <option value="unknown">Unknown</option>
+                <option value="sleeping">Sleeping</option>
+              </select>
+            </label>
+            <label class="control">
+              Updates
+              <select id="projectFilterUpdates">
+                <option value="all">All</option>
+                <option value="yes">Available</option>
+                <option value="no">None</option>
+              </select>
+            </label>
+            <label class="control project-filter-name">
+              Name
+              <input
+                type="text"
+                id="projectFilterName"
+                placeholder="Search project names"
+                autocomplete="off"
+              />
+            </label>
+            <button class="btn subtle filter-clear" id="clearProjectFilters" type="button">
+              Clear filters
+            </button>
           </div>
           <div class="bulk-actions hidden" id="bulkActions">
             <button class="btn ghost bulk-action" data-bulk-action="start">Start</button>
@@ -111,13 +168,10 @@
 
     <template id="hostRowTemplate">
       <li class="list-row">
-        <label class="checkbox">
-          <input class="host-checkbox" type="checkbox" />
-          <span class="checkbox-label">
-            <span class="row-title host-name"></span>
-            <span class="row-subtitle host-meta"></span>
-          </span>
-        </label>
+        <div class="host-info">
+          <span class="row-title host-name"></span>
+          <span class="row-subtitle host-meta"></span>
+        </div>
         <div class="row-actions host-actions">
           <button class="btn subtle host-action action-ready sleep-host" aria-label="Sleep host" title="Sleep host (stop running projects and mark sleeping)">
             <span class="material-symbols-outlined action-icon">bedtime</span>
