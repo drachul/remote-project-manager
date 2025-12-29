@@ -344,6 +344,11 @@ def _ensure_setting_value(conn: sqlite3.Connection, key: str, value: str) -> str
     return value
 
 
+def _connect_db_uri(path: str) -> sqlite3.Connection:
+    uri_path = Path(path).resolve().as_uri()
+    return sqlite3.connect(f"{uri_path}?mode=rwc", uri=True, timeout=5)
+
+
 def _connect_db(path: str) -> sqlite3.Connection:
     attempts = max(1, DB_OPEN_ATTEMPTS)
     delay = max(0.0, DB_OPEN_DELAY_SECONDS)
@@ -357,13 +362,24 @@ def _connect_db(path: str) -> sqlite3.Connection:
             if "unable to open database file" not in message:
                 _log_db_path_diagnostics(path)
                 raise
-            logger.debug(
-                "DB open failed path=%s attempt=%s/%s error=%s",
-                path,
-                attempt,
-                attempts,
-                exc,
-            )
+            try:
+                return _connect_db_uri(path)
+            except sqlite3.OperationalError as uri_exc:
+                last_exc = uri_exc
+                logger.debug(
+                    "DB open failed path=%s attempt=%s/%s error=%s",
+                    path,
+                    attempt,
+                    attempts,
+                    exc,
+                )
+                logger.debug(
+                    "DB open failed uri path=%s attempt=%s/%s error=%s",
+                    path,
+                    attempt,
+                    attempts,
+                    uri_exc,
+                )
             if attempt < attempts and delay > 0:
                 time.sleep(delay * attempt)
     if last_exc:
@@ -428,6 +444,24 @@ def _log_path_info(label: str, path: str) -> None:
     )
 
 
+def _probe_db_path_access(path: str) -> None:
+    parent = os.path.dirname(path) or "."
+    probe_path = os.path.join(parent, f".rpm-db-probe-{os.getpid()}")
+    try:
+        fd = os.open(probe_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
+        os.unlink(probe_path)
+        logger.debug("DB path probe write ok path=%s", parent)
+    except OSError as exc:
+        logger.debug("DB path probe write failed path=%s error=%s errno=%s", parent, exc, exc.errno)
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        os.close(fd)
+        logger.debug("DB path probe open ok path=%s", path)
+    except OSError as exc:
+        logger.debug("DB path probe open failed path=%s error=%s errno=%s", path, exc, exc.errno)
+
+
 def _log_db_path_diagnostics(path: str) -> None:
     logger.debug(
         "DB path diagnostics user=%s uid=%s group=%s gid=%s",
@@ -450,6 +484,7 @@ def _log_db_path_diagnostics(path: str) -> None:
         )
     except OSError:
         logger.debug("DB path filesystem stats unavailable for %s", parent)
+    _probe_db_path_access(path)
 
 
 def _ensure_db(path: str, *, log_exception: bool = True) -> None:
