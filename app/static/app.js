@@ -113,6 +113,24 @@ const scheduleStatus = document.getElementById("scheduleStatus");
 const scheduleLast = document.getElementById("scheduleLast");
 const scheduleNext = document.getElementById("scheduleNext");
 
+function handleFindShortcut(event) {
+  if (!projectFilterName) {
+    return;
+  }
+  if (event.key.toLowerCase() !== "f") {
+    return;
+  }
+  if (!(event.ctrlKey || event.metaKey) || event.altKey) {
+    return;
+  }
+  if (document.activeElement === projectFilterName) {
+    return;
+  }
+  event.preventDefault();
+  projectFilterName.focus();
+  projectFilterName.select();
+}
+
 const state = {
   hosts: [],
   stateSnapshot: null,
@@ -4089,6 +4107,7 @@ logsTailInput.addEventListener("keydown", (event) => {
 });
 logsShowStdout.addEventListener("change", updateLogsFilter);
 logsShowStderr.addEventListener("change", updateLogsFilter);
+document.addEventListener("keydown", handleFindShortcut);
 if (projectSelectToggle) {
   projectSelectToggle.addEventListener("change", () => {
     if (projectSelectToggle.checked) {

@@ -161,7 +161,7 @@ body {
 .panel {
   background: var(--card);
   border-radius: var(--radius);
-  padding: 20px;
+  padding: 4px 8px;
   box-shadow: var(--shadow);
   border: 1px solid rgba(243, 244, 246, 0.08);
   display: flex;
@@ -244,7 +244,7 @@ body {
 .project-table {
   width: 100%;
   border-collapse: separate;
-  border-spacing: 0 10px;
+  border-spacing: 0 2px;
 }
 
 .project-table th {
@@ -252,7 +252,11 @@ body {
   font-size: 11px;
   color: var(--muted);
   font-weight: 600;
-  padding: 0 10px 6px;
+  padding: 4px 10px 8px;
+}
+
+.project-table th + th {
+  border-left: 1px solid rgba(243, 244, 246, 0.08);
 }
 
 .project-table th.col-select {
@@ -266,8 +270,8 @@ body {
   width: 1px;
   white-space: nowrap;
   text-align: center;
-  padding-left: 2px;
-  padding-right: 2px;
+  padding-left: 6px;
+  padding-right: 6px;
 }
 
 .project-table th.col-select {
@@ -337,7 +341,7 @@ body {
   background: #0f1620;
   border: 1px solid rgba(243, 244, 246, 0.08);
   border-radius: 12px;
-  padding: 10px;
+  padding: 4px 8px;
   box-shadow: var(--shadow);
   z-index: 40;
   min-width: 200px;
@@ -375,7 +379,7 @@ body {
 
 .project-table .list-row td {
   background: #101721;
-  padding: 10px;
+  padding: 4px 8px;
   vertical-align: middle;
 }
 
@@ -437,7 +441,11 @@ body {
 }
 
 .project-cell.project-status .status-icon {
-  font-size: 36px;
+  font-size: 24px;
+}
+
+.project-cell.project-updates .updates-icon {
+  font-size: 24px;
 }
 
 .project-cell.project-backup .backup-toggle {
@@ -586,15 +594,22 @@ body {
 }
 
 .project-delete {
-  padding: 3px 8px;
+  padding: 2px 4px;
 }
 
 .project-details {
-  padding: 3px 8px;
+  padding: 2px 4px;
 }
 
 .project-details .action-icon {
   font-size: 14px;
+}
+
+.project-action,
+.action-menu-toggle,
+.logs,
+.compose {
+  padding: 2px 4px;
 }
 
 .icon-badges {
@@ -871,7 +886,7 @@ body {
 .card {
   background: var(--card);
   border-radius: var(--radius);
-  padding: 20px;
+  padding: 4px 8px;
   box-shadow: var(--shadow);
   border: 1px solid rgba(243, 244, 246, 0.08);
   animation: fadeUp 0.7s ease-out both;
@@ -1166,7 +1181,7 @@ body {
   color: #f8fafc;
   border: none;
   outline: none;
-  padding: 10px;
+  padding: 4px 8px;
   font-family: "Courier New", monospace;
   font-size: 12px;
   line-height: 1.5;
@@ -1197,7 +1212,7 @@ body {
 .compose-lint {
   background: #0a0f16;
   color: #fca5a5;
-  padding: 10px;
+  padding: 4px 8px;
   border-radius: 10px;
   border: 1px solid rgba(243, 244, 246, 0.08);
   font-size: 12px;
@@ -1273,7 +1288,7 @@ body {
   overflow: auto;
   background: #101721;
   border-radius: 18px;
-  padding: 20px;
+  padding: 4px 8px;
   border: 1px solid rgba(243, 244, 246, 0.08);
   box-shadow: 0 24px 60px rgba(2, 6, 23, 0.7);
   display: flex;
