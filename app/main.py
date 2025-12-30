@@ -6,6 +6,7 @@ import hmac
 import json
 import logging
 import os
+import resource
 import secrets
 import sqlite3
 import string
@@ -444,6 +445,19 @@ def _log_path_info(label: str, path: str) -> None:
     )
 
 
+def _log_fd_diagnostics() -> None:
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        logger.debug("DB fd limits soft=%s hard=%s", soft, hard)
+    except (ValueError, OSError):
+        logger.debug("DB fd limits unavailable")
+    try:
+        fd_count = len(os.listdir("/proc/self/fd"))
+        logger.debug("DB fd open_count=%s", fd_count)
+    except OSError:
+        logger.debug("DB fd open_count unavailable")
+
+
 def _probe_db_path_access(path: str) -> None:
     parent = os.path.dirname(path) or "."
     probe_path = os.path.join(parent, f".rpm-db-probe-{os.getpid()}")
@@ -485,6 +499,7 @@ def _log_db_path_diagnostics(path: str) -> None:
     except OSError:
         logger.debug("DB path filesystem stats unavailable for %s", parent)
     _probe_db_path_access(path)
+    _log_fd_diagnostics()
 
 
 def _ensure_db(path: str, *, log_exception: bool = True) -> None:
