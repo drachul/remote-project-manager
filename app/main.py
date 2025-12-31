@@ -70,6 +70,10 @@ from .models import (
     UserUpdateRequest,
     RunToComposeRequest,
     RunToComposeResponse,
+    EventStatusEntry,
+    EventStatusResponse,
+    BackupScheduleSummaryEntry,
+    BackupScheduleSummaryResponse,
 )
 from .ssh import SSHError, stream_ssh_command
 
@@ -138,6 +142,14 @@ async def load_settings() -> None:
     app.state.update_interval_seconds = _load_interval_setting(
         "update_interval_seconds", _update_interval_seconds()
     )
+    app.state.event_status = _init_event_status()
+    now = _now()
+    if app.state.state_interval_seconds > 0:
+        _set_event_next_run("status_refresh", now + timedelta(seconds=app.state.state_interval_seconds))
+    if app.state.update_interval_seconds > 0:
+        _set_event_next_run("update_refresh", now + timedelta(seconds=app.state.update_interval_seconds))
+    if app.state.db_path:
+        _set_event_next_run("token_cleanup", now + timedelta(seconds=TOKEN_CLEANUP_INTERVAL_SECONDS))
     app.state.state_task = _start_state_task()
     app.state.update_task = _start_update_task()
     app.state.backup_task = _start_backup_task()
@@ -171,6 +183,56 @@ async def auth_middleware(request: Request, call_next):
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+EVENT_DEFINITIONS = {
+    "status_refresh": {
+        "label": "Project status refresh",
+        "description": "Refreshes one project's status based on the oldest refresh timestamp.",
+    },
+    "update_refresh": {
+        "label": "Image update check",
+        "description": "Checks for a service image update based on the oldest update check.",
+    },
+    "backup_schedule": {
+        "label": "Scheduled backups",
+        "description": "Runs scheduled backups for enabled projects using cron settings.",
+    },
+    "token_cleanup": {
+        "label": "Token cleanup",
+        "description": "Removes expired authentication tokens from the database.",
+    },
+}
+
+
+def _init_event_status() -> Dict[str, dict]:
+    return {
+        key: {"last_run": None, "last_success": None, "last_result": None, "next_run": None}
+        for key in EVENT_DEFINITIONS
+    }
+
+
+def _record_event_result(
+    key: str,
+    success: Optional[bool],
+    message: Optional[str],
+    run_at: Optional[datetime] = None,
+) -> None:
+    status = getattr(app.state, "event_status", None)
+    if status is None:
+        return
+    entry = status.setdefault(key, {})
+    entry["last_run"] = run_at or _now()
+    entry["last_success"] = success
+    if message is not None:
+        entry["last_result"] = message
+
+
+def _set_event_next_run(key: str, next_run: Optional[datetime]) -> None:
+    status = getattr(app.state, "event_status", None)
+    if status is None:
+        return
+    entry = status.setdefault(key, {})
+    entry["next_run"] = next_run
 
 
 def _configure_logging(level_name: Optional[str]) -> None:
@@ -1949,10 +2011,16 @@ def _purge_expired_tokens() -> None:
 
 async def _token_cleanup_loop() -> None:
     while True:
+        run_at = _now()
         try:
             await asyncio.to_thread(_purge_expired_tokens)
-        except Exception:
+            _record_event_result("token_cleanup", True, "Token cleanup complete", run_at)
+        except Exception as exc:
+            _record_event_result("token_cleanup", False, str(exc), run_at)
             logger.exception("Token cleanup failed")
+        _set_event_next_run(
+            "token_cleanup", run_at + timedelta(seconds=TOKEN_CLEANUP_INTERVAL_SECONDS)
+        )
         await asyncio.sleep(TOKEN_CLEANUP_INTERVAL_SECONDS)
 
 
@@ -1960,6 +2028,10 @@ async def _set_state_interval(seconds: int) -> None:
     await _stop_state_task()
     app.state.state_interval_seconds = max(0, seconds)
     app.state.state_task = _start_state_task()
+    if app.state.state_interval_seconds > 0:
+        _set_event_next_run("status_refresh", _now() + timedelta(seconds=app.state.state_interval_seconds))
+    else:
+        _set_event_next_run("status_refresh", None)
     _persist_interval_setting("state_interval_seconds", app.state.state_interval_seconds)
 
 
@@ -1967,6 +2039,10 @@ async def _set_update_interval(seconds: int) -> None:
     await _stop_update_task()
     app.state.update_interval_seconds = max(0, seconds)
     app.state.update_task = _start_update_task()
+    if app.state.update_interval_seconds > 0:
+        _set_event_next_run("update_refresh", _now() + timedelta(seconds=app.state.update_interval_seconds))
+    else:
+        _set_event_next_run("update_refresh", None)
     _persist_interval_setting("update_interval_seconds", app.state.update_interval_seconds)
 
 
@@ -2243,7 +2319,172 @@ def _load_enabled_backups() -> List[dict]:
     return items
 
 
-async def _run_scheduled_backup_for_project(host_id: str, project: str) -> None:
+
+
+
+
+def _load_backup_state_rows() -> List[dict]:
+    path = app.state.db_path
+    if not path:
+        return []
+    _ensure_db(path)
+    with _open_db(path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT host_id, project, enabled, cron_override, last_backup_at "
+            "FROM backup_state"
+        ).fetchall()
+    items = []
+    for row in rows:
+        items.append(
+            {
+                "host_id": row["host_id"],
+                "project": row["project"],
+                "enabled": bool(row["enabled"]),
+                "cron_override": row["cron_override"],
+                "last_backup_at": _parse_timestamp(row["last_backup_at"]),
+            }
+        )
+    return items
+
+
+def _global_backup_last_run(rows: List[dict]) -> Optional[datetime]:
+    latest = None
+    for row in rows:
+        if not row.get("enabled"):
+            continue
+        if row.get("cron_override"):
+            continue
+        value = row.get("last_backup_at")
+        if value and (latest is None or value > latest):
+            latest = value
+    return latest
+
+
+def _build_backup_schedule_summary() -> List[BackupScheduleSummaryEntry]:
+    cron_expr, cron_enabled = _load_backup_cron_state()
+    rows = _load_backup_state_rows()
+    now = _now()
+    global_enabled = bool(cron_enabled and cron_expr)
+    global_last_run = _global_backup_last_run(rows)
+    global_next_run = None
+    if global_enabled:
+        base_time = global_last_run or now
+        global_next_run = _next_cron_run(cron_expr, base_time)
+
+    items: List[BackupScheduleSummaryEntry] = [
+        BackupScheduleSummaryEntry(
+            key="global",
+            scope="global",
+            name="global",
+            last_run=global_last_run,
+            next_run=global_next_run,
+            enabled=global_enabled,
+            override=False,
+        )
+    ]
+
+    for row in sorted(rows, key=lambda item: (item["host_id"], item["project"])):
+        host_id = row["host_id"]
+        project = row["project"]
+        key = f"{host_id}::{project}"
+        enabled = bool(row.get("enabled"))
+        override = bool(row.get("cron_override"))
+        next_run = None
+        if enabled:
+            if override and row.get("cron_override"):
+                base_time = row.get("last_backup_at") or now
+                next_run = _next_cron_run(row["cron_override"], base_time)
+            elif global_enabled and cron_expr:
+                base_time = row.get("last_backup_at") or now
+                next_run = _next_cron_run(cron_expr, base_time)
+        items.append(
+            BackupScheduleSummaryEntry(
+                key=key,
+                scope="project",
+                name=project,
+                host_id=host_id,
+                project=project,
+                last_run=row.get("last_backup_at"),
+                next_run=next_run,
+                enabled=enabled,
+                override=override,
+            )
+        )
+
+    return items
+def _build_event_status_entries() -> List[EventStatusEntry]:
+    now = _now()
+    status_map = getattr(app.state, "event_status", {})
+    events: List[EventStatusEntry] = []
+    for key, info in EVENT_DEFINITIONS.items():
+        data = status_map.get(key, {})
+        last_run = data.get("last_run")
+        last_success = data.get("last_success")
+        last_result = data.get("last_result")
+        next_run = data.get("next_run")
+        interval = None
+        enabled = True
+
+        if key == "status_refresh":
+            interval = app.state.state_interval_seconds
+            enabled = interval > 0
+        elif key == "update_refresh":
+            interval = app.state.update_interval_seconds
+            enabled = interval > 0 and compose.UPDATE_CHECKS_ENABLED
+            if not compose.UPDATE_CHECKS_ENABLED and not last_result:
+                last_result = "Update checks disabled"
+        elif key == "backup_schedule":
+            interval = None
+            try:
+                cron_expr, cron_enabled = _load_backup_cron_state()
+                enabled_targets = _load_enabled_backups()
+                enabled = (
+                    bool(_config().backup)
+                    and cron_enabled
+                    and bool(cron_expr)
+                    and bool(enabled_targets)
+                )
+            except Exception as exc:
+                enabled = False
+                if not last_result:
+                    last_result = f"Backup schedule unavailable: {exc}"
+            if not next_run:
+                next_times = [
+                    entry.get("next_run")
+                    for entry in app.state.backup_schedule_map.values()
+                    if entry.get("next_run")
+                ]
+                if next_times:
+                    next_run = min(next_times)
+        elif key == "token_cleanup":
+            interval = TOKEN_CLEANUP_INTERVAL_SECONDS
+            enabled = bool(app.state.db_path) and interval > 0
+
+        if enabled and not next_run and interval:
+            base = last_run or now
+            next_run = base + timedelta(seconds=interval)
+        if not enabled:
+            next_run = None
+
+        events.append(
+            EventStatusEntry(
+                id=key,
+                label=info["label"],
+                description=info["description"],
+                enabled=enabled,
+                next_run=next_run,
+                last_run=last_run,
+                last_success=last_success,
+                last_result=last_result,
+                interval_seconds=interval,
+            )
+        )
+
+    return events
+
+
+async def _run_scheduled_backup_for_project(host_id: str, project: str) -> str:
     backup = _backup_config()
     if await _backup_in_progress(host_id, project):
         logger.info(
@@ -2251,7 +2492,7 @@ async def _run_scheduled_backup_for_project(host_id: str, project: str) -> None:
             host_id,
             project,
         )
-        return
+        return "skipped"
     host = _host(host_id)
     try:
         dest, output = await asyncio.to_thread(
@@ -2266,6 +2507,7 @@ async def _run_scheduled_backup_for_project(host_id: str, project: str) -> None:
             host_id,
             project,
         )
+        return "success"
     except Exception as exc:
         await asyncio.to_thread(
             _record_backup_result, host_id, project, False, str(exc)
@@ -2275,6 +2517,7 @@ async def _run_scheduled_backup_for_project(host_id: str, project: str) -> None:
             host_id,
             project,
         )
+        return "failed"
 
 
 async def _backup_refresh_loop() -> None:
@@ -2303,6 +2546,7 @@ async def _backup_refresh_loop() -> None:
                     schedule_map.pop(key, None)
 
             if not schedule_map:
+                _set_event_next_run("backup_schedule", None)
                 schedule_event.clear()
                 try:
                     await asyncio.wait_for(schedule_event.wait(), timeout=60)
@@ -2311,16 +2555,35 @@ async def _backup_refresh_loop() -> None:
                 continue
 
             ran_any = False
+            success_count = 0
+            failure_count = 0
+            skipped_count = 0
             for key, entry in list(schedule_map.items()):
                 next_run = entry.get("next_run")
                 if not next_run or next_run > now:
                     continue
                 host_id, project = key.split("::", 1)
-                await _run_scheduled_backup_for_project(host_id, project)
+                status = await _run_scheduled_backup_for_project(host_id, project)
                 ran_any = True
+                if status == "success":
+                    success_count += 1
+                elif status == "failed":
+                    failure_count += 1
+                else:
+                    skipped_count += 1
                 cron_value = entry.get("cron")
                 schedule_map[key]["next_run"] = (
                     _next_cron_run(cron_value, _now()) if cron_value else None
+                )
+
+            if ran_any:
+                total = success_count + failure_count + skipped_count
+                message = (
+                    f"Ran {total} scheduled backup(s): {success_count} success, "
+                    f"{failure_count} failed, {skipped_count} skipped"
+                )
+                _record_event_result(
+                    "backup_schedule", failure_count == 0, message, now
                 )
 
             next_times = [
@@ -2329,9 +2592,11 @@ async def _backup_refresh_loop() -> None:
                 if entry.get("next_run")
             ]
             if not next_times:
+                _set_event_next_run("backup_schedule", None)
                 await asyncio.sleep(60)
                 continue
             next_run = min(next_times)
+            _set_event_next_run("backup_schedule", next_run)
             sleep_seconds = max(30, (next_run - _now()).total_seconds())
             schedule_event.clear()
             try:
@@ -2340,7 +2605,8 @@ async def _backup_refresh_loop() -> None:
                 pass
         except HTTPException:
             raise
-        except Exception:
+        except Exception as exc:
+            _record_event_result("backup_schedule", False, str(exc), _now())
             logger.exception("Scheduled backup run failed")
         await asyncio.sleep(60)
 
@@ -2350,11 +2616,16 @@ async def _state_refresh_loop() -> None:
     if interval <= 0:
         return
     while True:
+        run_at = _now()
         try:
             await _refresh_status_candidate()
-        except Exception:
+            _record_event_result(
+                "status_refresh", True, "Status refresh cycle complete", run_at
+            )
+        except Exception as exc:
+            _record_event_result("status_refresh", False, str(exc), run_at)
             logger.exception("Status state refresh failed")
-            pass
+        _set_event_next_run("status_refresh", run_at + timedelta(seconds=interval))
         await asyncio.sleep(interval)
 
 
@@ -2363,11 +2634,23 @@ async def _update_refresh_loop() -> None:
     if interval <= 0:
         return
     while True:
+        run_at = _now()
+        if not compose.UPDATE_CHECKS_ENABLED:
+            _record_event_result(
+                "update_refresh", None, "Update checks disabled", run_at
+            )
+            _set_event_next_run("update_refresh", run_at + timedelta(seconds=interval))
+            await asyncio.sleep(interval)
+            continue
         try:
             await _refresh_update_state()
-        except Exception:
+            _record_event_result(
+                "update_refresh", True, "Update check cycle complete", run_at
+            )
+        except Exception as exc:
+            _record_event_result("update_refresh", False, str(exc), run_at)
             logger.exception("Update state refresh failed")
-            pass
+        _set_event_next_run("update_refresh", run_at + timedelta(seconds=interval))
         await asyncio.sleep(interval)
 
 
@@ -3589,6 +3872,12 @@ async def get_host_state(host_id: str) -> HostStateResponse:
     return HostStateResponse(host_id=host_id)
 
 
+@app.get("/events/status", response_model=EventStatusResponse)
+async def get_event_status() -> EventStatusResponse:
+    events = await asyncio.to_thread(_build_event_status_entries)
+    return EventStatusResponse(generated_at=_now(), events=events)
+
+
 @app.post(
     "/hosts/{host_id}/projects/{project}/state/refresh",
     response_model=StateRefreshResponse,
@@ -3631,6 +3920,12 @@ async def update_update_interval(
     return IntervalResponse(seconds=app.state.update_interval_seconds)
 
 
+@app.get("/backup/schedule/summary", response_model=BackupScheduleSummaryResponse)
+async def get_backup_schedule_summary() -> BackupScheduleSummaryResponse:
+    items = await asyncio.to_thread(_build_backup_schedule_summary)
+    return BackupScheduleSummaryResponse(items=items)
+
+
 @app.get("/backup/schedule", response_model=BackupScheduleResponse)
 async def get_backup_schedule() -> BackupScheduleResponse:
     if not app.state.db_path:
@@ -3671,5 +3966,5 @@ async def update_backup_schedule(
 @app.post("/hosts/{host_id}/state/refresh", response_model=StateRefreshResponse)
 async def refresh_host_state_endpoint(host_id: str) -> StateRefreshResponse:
     _host(host_id)
-    refreshed_at = await _refresh_state([host_id])
+    refreshed_at = await _refresh_status_state([host_id])
     return StateRefreshResponse(refreshed_at=refreshed_at)

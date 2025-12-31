@@ -226,3 +226,36 @@ class BackupScheduleResponse(BaseModel):
     cron: Optional[str] = None
     enabled: bool = False
     next_run: Optional[datetime] = None
+
+
+class EventStatusEntry(BaseModel):
+    id: str
+    label: str
+    description: str
+    enabled: bool = True
+    next_run: Optional[datetime] = None
+    last_run: Optional[datetime] = None
+    last_success: Optional[bool] = None
+    last_result: Optional[str] = None
+    interval_seconds: Optional[int] = None
+
+
+class EventStatusResponse(BaseModel):
+    generated_at: datetime
+    events: List[EventStatusEntry] = Field(default_factory=list)
+
+
+class BackupScheduleSummaryEntry(BaseModel):
+    key: str
+    scope: str
+    name: str
+    host_id: Optional[str] = None
+    project: Optional[str] = None
+    last_run: Optional[datetime] = None
+    next_run: Optional[datetime] = None
+    enabled: bool = False
+    override: bool = False
+
+
+class BackupScheduleSummaryResponse(BaseModel):
+    items: List[BackupScheduleSummaryEntry] = Field(default_factory=list)

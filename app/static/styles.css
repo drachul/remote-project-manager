@@ -265,8 +265,7 @@ body {
 
 .project-table th.col-status,
 .project-table th.col-updates,
-.project-table th.col-actions,
-.project-table th.col-backup {
+.project-table th.col-actions {
   width: 1px;
   white-space: nowrap;
   text-align: center;
@@ -412,8 +411,7 @@ body {
 
 .project-cell.project-status,
 .project-cell.project-updates,
-.project-cell.project-actions,
-.project-cell.project-backup {
+.project-cell.project-actions {
   text-align: center;
   width: 1px;
   white-space: nowrap;
@@ -423,13 +421,11 @@ body {
 .project-cell.project-select input,
 .project-cell.project-status .status-badges,
 .project-cell.project-updates .updates-icon,
-.project-cell.project-actions .action-menu,
-.project-cell.project-backup .backup-toggle {
+.project-cell.project-actions .action-menu {
   margin: 0 auto;
 }
 
-.project-cell.project-select .project-checkbox,
-.project-cell.project-backup .backup-checkbox {
+.project-cell.project-select .project-checkbox {
   display: block;
   margin: 0 auto;
 }
@@ -446,16 +442,6 @@ body {
 
 .project-cell.project-updates .updates-icon {
   font-size: 24px;
-}
-
-.project-cell.project-backup .backup-toggle {
-  background: transparent;
-  padding: 0;
-  gap: 0;
-}
-
-.project-cell.project-backup .backup-toggle span {
-  display: none;
 }
 
 .action-menu {
@@ -1003,6 +989,76 @@ body {
   gap: 16px;
 }
 
+.schedule-summary {
+  border: 1px solid rgba(243, 244, 246, 0.08);
+  border-radius: 12px;
+  overflow: auto;
+  max-height: 260px;
+  position: relative;
+}
+
+.schedule-summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.schedule-summary-table th,
+.schedule-summary-table td {
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.schedule-summary-table thead {
+  background: rgba(15, 23, 42, 0.65);
+}
+
+.schedule-summary-table th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: rgba(15, 23, 42, 0.9);
+}
+
+.schedule-summary-table tbody tr {
+  border-top: 1px solid rgba(243, 244, 246, 0.08);
+  cursor: pointer;
+}
+
+.schedule-summary-row.global {
+  background: #0b1220;
+}
+
+.schedule-summary-table tbody tr:hover {
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.schedule-summary-row.selected {
+  background: rgba(59, 130, 246, 0.16);
+}
+
+.schedule-summary-table .center {
+  text-align: center;
+}
+
+.schedule-summary-table input[type="checkbox"] {
+  accent-color: var(--teal);
+}
+
+.schedule-config.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.schedule-scope-hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .schedule-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -1328,9 +1384,28 @@ body {
 
 .modal-header {
   display: flex;
-  justify-content: flex-start;
+  justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
+}
+
+.modal-close {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: #cbd5f0;
+  padding: 4px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.modal-close:hover {
+  background: rgba(148, 163, 184, 0.12);
+  color: #f8fafc;
+}
+
+.modal-close .material-symbols-outlined {
+  font-size: 18px;
 }
 
 .modal-title {
@@ -1342,6 +1417,112 @@ body {
   font-size: 12px;
   color: var(--muted);
   margin-top: 4px;
+}
+
+.event-status-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.event-status-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.event-status-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.event-auto-toggle.active {
+  color: #86efac;
+}
+
+.event-status-updated {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.event-status-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.event-status-card {
+  border: 1px solid rgba(243, 244, 246, 0.08);
+  background: #0b1220;
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.event-status-card.disabled {
+  opacity: 0.65;
+}
+
+.event-status-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.event-status-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.event-status-badge {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.15);
+  color: #86efac;
+}
+
+.event-status-card.disabled .event-status-badge {
+  background: rgba(148, 163, 184, 0.15);
+  color: #94a3b8;
+}
+
+.event-status-desc {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.event-status-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+  font-size: 12px;
+  color: #cbd5f0;
+}
+
+.event-status-meta strong {
+  color: #f8fafc;
+  font-weight: 600;
+}
+
+.event-status-result.ok {
+  color: #86efac;
+}
+
+.event-status-result.fail {
+  color: #fca5a5;
+}
+
+.event-countdown {
+  color: var(--muted);
+  margin-left: 6px;
 }
 
 .logs-controls {

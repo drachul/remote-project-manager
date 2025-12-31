@@ -8,7 +8,6 @@ const projectCount = document.getElementById("projectCount");
 const headerFilterHosts = document.getElementById("headerFilterHosts");
 const headerFilterStatus = document.getElementById("headerFilterStatus");
 const headerFilterUpdates = document.getElementById("headerFilterUpdates");
-const headerFilterBackup = document.getElementById("headerFilterBackup");
 const filterToggleButtons = document.querySelectorAll(".filter-toggle");
 const filterMenus = document.querySelectorAll(".filter-menu");
 const projectSortHeaders = document.querySelectorAll(".project-table .sort-header");
@@ -77,6 +76,13 @@ const authSubmit = document.getElementById("authSubmit");
 const authStatus = document.getElementById("authStatus");
 const logoutBtn = document.getElementById("logoutBtn");
 const openConfigBtn = document.getElementById("openConfig");
+const openEventStatusBtn = document.getElementById("openEventStatus");
+const eventStatusModal = document.getElementById("eventStatusModal");
+const closeEventStatusModalBtn = document.getElementById("closeEventStatusModal");
+const refreshEventStatusBtn = document.getElementById("refreshEventStatus");
+const toggleEventAutoBtn = document.getElementById("toggleEventAuto");
+const eventStatusList = document.getElementById("eventStatusList");
+const eventStatusUpdated = document.getElementById("eventStatusUpdated");
 const configModal = document.getElementById("configModal");
 const closeConfigModalBtn = document.getElementById("closeConfigModal");
 const hostConfigTemplate = document.getElementById("hostConfigTemplate");
@@ -97,8 +103,6 @@ const tokenExpiryInput = document.getElementById("tokenExpirySeconds");
 const saveIntervalsBtn = document.getElementById("saveIntervals");
 const configStatus = document.getElementById("configStatus");
 const toastContainer = document.getElementById("toastContainer");
-const scheduleEnabled = document.getElementById("scheduleEnabled");
-const scheduleEnabledLabel = document.getElementById("scheduleEnabledLabel");
 const scheduleScope = document.getElementById("scheduleScope");
 const scheduleScopeHint = document.getElementById("scheduleScopeHint");
 const scheduleTime = document.getElementById("scheduleTime");
@@ -112,6 +116,8 @@ const refreshScheduleBtn = document.getElementById("refreshSchedule");
 const scheduleStatus = document.getElementById("scheduleStatus");
 const scheduleLast = document.getElementById("scheduleLast");
 const scheduleNext = document.getElementById("scheduleNext");
+const scheduleSummaryBody = document.getElementById("scheduleSummaryBody");
+const scheduleConfig = document.getElementById("scheduleConfig");
 
 function handleFindShortcut(event) {
   if (!projectFilterName) {
@@ -154,7 +160,6 @@ const state = {
     sortDir: "asc",
     status: "all",
     updates: "all",
-    backup: "all",
     query: "",
   },
   filterMenuListenerBound: false,
@@ -174,7 +179,20 @@ const logsState = {
 const scheduleState = {
   initialized: false,
   lastLoadFailed: false,
+  summary: [],
+  selectedKey: "global",
 };
+
+const eventStatusState = {
+  items: [],
+  updatedAt: null,
+  timerId: null,
+  autoRefreshId: null,
+  autoRefreshEnabled: true,
+  loading: false,
+};
+
+const EVENT_STATUS_REFRESH_MS = 30000;
 
 const deleteProjectState = {
   hostId: null,
@@ -382,9 +400,6 @@ function updateProjectFilterState() {
   if (headerFilterUpdates) {
     state.projectFilters.updates = headerFilterUpdates.value;
   }
-  if (headerFilterBackup) {
-    state.projectFilters.backup = headerFilterBackup.value;
-  }
   if (projectFilterName) {
     state.projectFilters.query = projectFilterName.value || "";
   }
@@ -394,7 +409,6 @@ function updateProjectFilterIndicators() {
   const hostActive = headerFilterHosts && headerFilterHosts.selectedOptions.length > 0;
   const statusActive = headerFilterStatus && headerFilterStatus.value !== "all";
   const updatesActive = headerFilterUpdates && headerFilterUpdates.value !== "all";
-  const backupActive = headerFilterBackup && headerFilterBackup.value !== "all";
   const queryActive = Boolean(projectFilterName && projectFilterName.value.trim());
 
   if (headerFilterHosts) {
@@ -415,14 +429,7 @@ function updateProjectFilterIndicators() {
       toggle.classList.toggle('active', updatesActive);
     }
   }
-  if (headerFilterBackup) {
-    const toggle = document.querySelector('.filter-toggle[data-filter="backup"]');
-    if (toggle) {
-      toggle.classList.toggle('active', backupActive);
-    }
-  }
-
-  const activeCount = [hostActive, statusActive, updatesActive, backupActive, queryActive].filter(Boolean).length;
+  const activeCount = [hostActive, statusActive, updatesActive, queryActive].filter(Boolean).length;
   if (projectFilterCount) {
     projectFilterCount.textContent = String(activeCount);
     projectFilterCount.classList.toggle('hidden', activeCount === 0);
@@ -916,7 +923,7 @@ function syncCronFromBuilder() {
 
 function updateScheduleInfo(data) {
   scheduleLast.textContent = formatTimestamp(data.last_run);
-  scheduleNext.textContent = data.next_run ? formatTimestamp(data.next_run) : "disabled";
+  scheduleNext.textContent = data.next_run ? formatTimestamp(data.next_run) : "never";
 }
 
 function getGlobalBackupLastRun() {
@@ -968,12 +975,19 @@ function populateScheduleScope() {
   globalOption.textContent = "Global schedule";
   scheduleScope.appendChild(globalOption);
 
-  const entries = buildProjectEntries();
+  const entries = (scheduleState.summary && scheduleState.summary.length)
+    ? scheduleState.summary.filter((entry) => entry.scope === "project")
+    : buildProjectEntries();
   const hosts = new Map();
   entries.forEach((entry) => {
-    const list = hosts.get(entry.hostId) || [];
-    list.push(entry.projectName);
-    hosts.set(entry.hostId, list);
+    const hostId = entry.host_id || entry.hostId;
+    const projectName = entry.project || entry.projectName;
+    if (!hostId || !projectName) {
+      return;
+    }
+    const list = hosts.get(hostId) || [];
+    list.push(projectName);
+    hosts.set(hostId, list);
   });
   Array.from(hosts.keys())
     .sort()
@@ -996,6 +1010,274 @@ function populateScheduleScope() {
   }
 }
 
+
+function getScheduleSummaryEntry(key) {
+  return scheduleState.summary.find((entry) => entry.key === key);
+}
+
+function formatScheduleTimestamp(value) {
+  return formatTimestamp(value);
+}
+
+function getFilteredScheduleSummaryItems() {
+  const items = scheduleState.summary || [];
+  if (!items.length) {
+    return items;
+  }
+  const visibleKeys = new Set(
+    applyProjectFilters(buildProjectEntries()).map((entry) => entry.key)
+  );
+  return items.filter((entry) => entry.scope !== "project" || visibleKeys.has(entry.key));
+}
+
+function renderScheduleSummary() {
+  if (!scheduleSummaryBody) {
+    return;
+  }
+  scheduleSummaryBody.innerHTML = "";
+  const items = getFilteredScheduleSummaryItems();
+  if (!items.length) {
+    const row = document.createElement("tr");
+    row.className = "empty";
+    const cell = document.createElement("td");
+    cell.colSpan = 5;
+    cell.textContent = "No schedule data available.";
+    row.appendChild(cell);
+    scheduleSummaryBody.appendChild(row);
+    return;
+  }
+  if (!scheduleState.selectedKey || !items.some((entry) => entry.key === scheduleState.selectedKey)) {
+    const fallback = items.find((entry) => entry.scope === "global");
+    scheduleState.selectedKey = (fallback ? fallback.key : items[0].key);
+  }
+  items.forEach((entry) => {
+    const row = document.createElement("tr");
+    row.className = "schedule-summary-row";
+    if (entry.scope === "global") {
+      row.classList.add("global");
+    }
+    row.dataset.key = entry.key;
+    if (entry.key === scheduleState.selectedKey) {
+      row.classList.add("selected");
+    }
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("input")) {
+        return;
+      }
+      selectScheduleRow(entry.key);
+    });
+
+    const nameCell = document.createElement("td");
+    nameCell.textContent = entry.name === "global" ? "global" : entry.name;
+    if (entry.host_id) {
+      nameCell.title = entry.host_id;
+    }
+
+    const lastCell = document.createElement("td");
+    lastCell.textContent = formatScheduleTimestamp(entry.last_run);
+
+    const nextCell = document.createElement("td");
+    nextCell.textContent = entry.enabled && entry.next_run ? formatScheduleTimestamp(entry.next_run) : "never";
+
+    const enabledCell = document.createElement("td");
+    enabledCell.className = "center";
+    const enabledInput = document.createElement("input");
+    enabledInput.type = "checkbox";
+    enabledInput.checked = Boolean(entry.enabled);
+    enabledInput.addEventListener("click", (event) => {
+      event.stopPropagation();
+    });
+    enabledInput.addEventListener("change", () => {
+      entry.enabled = enabledInput.checked;
+      renderScheduleSummary();
+      toggleScheduleEnabled(entry, enabledInput.checked);
+    });
+    enabledCell.appendChild(enabledInput);
+
+    const overrideCell = document.createElement("td");
+    overrideCell.className = "center";
+    const overrideInput = document.createElement("input");
+    overrideInput.type = "checkbox";
+    overrideInput.checked = Boolean(entry.override);
+    overrideInput.disabled = entry.scope === "global";
+    overrideInput.addEventListener("click", (event) => {
+      event.stopPropagation();
+    });
+    overrideInput.addEventListener("change", () => {
+      entry.override = overrideInput.checked;
+      renderScheduleSummary();
+      if (entry.key === scheduleState.selectedKey) {
+        setScheduleConfigDisabled(entry.scope === "project" && !entry.override);
+        updateScheduleHint(entry, entry.key);
+      }
+      toggleScheduleOverride(entry, overrideInput.checked);
+    });
+    overrideCell.appendChild(overrideInput);
+
+    row.appendChild(nameCell);
+    row.appendChild(lastCell);
+    row.appendChild(nextCell);
+    row.appendChild(enabledCell);
+    row.appendChild(overrideCell);
+
+    scheduleSummaryBody.appendChild(row);
+  });
+}
+
+function setScheduleConfigDisabled(disabled) {
+  if (!scheduleConfig) {
+    return;
+  }
+  scheduleConfig.classList.toggle("disabled", disabled);
+}
+
+function updateScheduleHint(entry, configScope) {
+  if (!scheduleScopeHint) {
+    return;
+  }
+  if (entry.scope === "global") {
+    scheduleScopeHint.textContent = "";
+    return;
+  }
+  if (!entry.override) {
+    scheduleScopeHint.textContent = "Override disabled; showing global schedule.";
+    return;
+  }
+  if (configScope === "global") {
+    scheduleScopeHint.textContent = "Override disabled; showing global schedule.";
+    return;
+  }
+  scheduleScopeHint.textContent = "Override schedule for this project.";
+}
+
+async function updateScheduleSelection() {
+  const entry = getScheduleSummaryEntry(scheduleState.selectedKey) || {
+    key: "global",
+    scope: "global",
+    name: "global",
+    enabled: false,
+    override: false,
+  };
+  const configScope = entry.scope === "global" || entry.override ? entry.key : "global";
+  if (scheduleScope) {
+    scheduleScope.value = configScope;
+  }
+  await loadSchedule();
+  updateScheduleInfo({
+    last_run: entry.last_run,
+    next_run: entry.enabled ? entry.next_run : null,
+  });
+  setScheduleConfigDisabled(entry.scope === "project" && !entry.override);
+  updateScheduleHint(entry, configScope);
+}
+
+function selectScheduleRow(key) {
+  scheduleState.selectedKey = key;
+  renderScheduleSummary();
+  updateScheduleSelection();
+}
+
+function getCurrentScheduleCronUtc() {
+  const raw = cronExpression.value.trim();
+  let cron = customCron.checked ? convertCustomCronToUtc(raw) : buildCronFromInputsUtc();
+  cron = cron ? cron.trim() : "";
+  return cron;
+}
+
+async function toggleScheduleEnabled(entry, enabled) {
+  if (entry.scope === "global") {
+    try {
+      const current = await api.get("/backup/schedule");
+      const cron = current.cron || "";
+      if (enabled && !cron) {
+        alert("Global schedule needs a cron expression before enabling.");
+        await loadScheduleSummary(entry.key);
+        return;
+      }
+      await api.put("/backup/schedule", {
+        cron: cron || null,
+        enabled,
+      });
+      await loadScheduleSummary(entry.key);
+    } catch (err) {
+      alert(`Failed to update global schedule: ${err.message}`);
+      await loadScheduleSummary(entry.key);
+    }
+    return;
+  }
+
+  if (!entry.host_id || !entry.project) {
+    return;
+  }
+  try {
+    await api.put(
+      `/hosts/${entry.host_id}/projects/${entry.project}/backup/settings`,
+      { enabled }
+    );
+    await loadScheduleSummary(entry.key);
+  } catch (err) {
+    alert(`Failed to update backup enabled: ${err.message}`);
+    await loadScheduleSummary(entry.key);
+  }
+}
+
+async function toggleScheduleOverride(entry, enabled) {
+  if (entry.scope !== "project" || !entry.host_id || !entry.project) {
+    return;
+  }
+  try {
+    if (enabled) {
+      let cron = getCurrentScheduleCronUtc();
+      if (!cron) {
+        const globalInfo = await api.get("/backup/schedule");
+        cron = globalInfo.cron || "";
+      }
+      if (!cron) {
+        alert("No cron expression available to apply as an override.");
+        await loadScheduleSummary(entry.key);
+        return;
+      }
+      await api.put(
+        `/hosts/${entry.host_id}/projects/${entry.project}/backup/settings`,
+        { cron_override: cron }
+      );
+    } else {
+      await api.put(
+        `/hosts/${entry.host_id}/projects/${entry.project}/backup/settings`,
+        { cron_override: null }
+      );
+    }
+    await loadScheduleSummary(entry.key);
+  } catch (err) {
+    alert(`Failed to update override: ${err.message}`);
+    await loadScheduleSummary(entry.key);
+  }
+}
+
+async function loadScheduleSummary(preferredKey) {
+  if (!scheduleSummaryBody) {
+    return { ok: false, error: "Schedule UI unavailable." };
+  }
+  scheduleSummaryBody.innerHTML = '<tr class="empty"><td colspan="5">Loading...</td></tr>';
+  try {
+    const data = await api.get("/backup/schedule/summary");
+    scheduleState.summary = data.items || [];
+    populateScheduleScope();
+    const keys = new Set(scheduleState.summary.map((entry) => entry.key));
+    if (preferredKey && keys.has(preferredKey)) {
+      scheduleState.selectedKey = preferredKey;
+    }
+    if (!scheduleState.selectedKey || !keys.has(scheduleState.selectedKey)) {
+      scheduleState.selectedKey = keys.has("global") ? "global" : scheduleState.summary[0]?.key;
+    }
+    renderScheduleSummary();
+    await updateScheduleSelection();
+    return { ok: true };
+  } catch (err) {
+    scheduleSummaryBody.innerHTML = `<tr class="empty"><td colspan="5">${err.message}</td></tr>`;
+    return { ok: false, error: err.message };
+  }
+}
 async function loadSchedule() {
   if (!scheduleStatus) {
     return { ok: false, error: "Schedule UI unavailable." };
@@ -1008,14 +1290,6 @@ async function loadSchedule() {
     if (scope.type === "global") {
       info = await api.get("/backup/schedule");
       cron = info.cron || "";
-      scheduleEnabled.checked =
-        typeof info.enabled === "boolean" ? info.enabled : Boolean(cron);
-      if (scheduleEnabledLabel) {
-        scheduleEnabledLabel.textContent = "Enable scheduled backups";
-      }
-      if (scheduleScopeHint) {
-        scheduleScopeHint.textContent = "Applies to enabled projects without overrides.";
-      }
       updateScheduleInfo({
         last_run: getGlobalBackupLastRun(),
         next_run: info.next_run,
@@ -1025,14 +1299,6 @@ async function loadSchedule() {
         `/hosts/${scope.hostId}/projects/${scope.projectName}/backup/settings`
       );
       cron = info.cron_override || "";
-      scheduleEnabled.checked = Boolean(cron);
-      if (scheduleEnabledLabel) {
-        scheduleEnabledLabel.textContent = "Override schedule for this project";
-      }
-      if (scheduleScopeHint) {
-        scheduleScopeHint.textContent =
-          "Leave disabled to inherit the global schedule.";
-      }
       const lastRun = info.last_backup_at || info.lastBackupAt;
       updateScheduleInfo({
         last_run: lastRun,
@@ -1099,20 +1365,19 @@ async function saveSchedule() {
   try {
     const scope = parseScheduleScope(scheduleScope.value || "global");
     if (scope.type === "global") {
+      const entry = getScheduleSummaryEntry("global");
+      const enabled = entry ? Boolean(entry.enabled) : false;
       await api.put("/backup/schedule", {
         cron: cron || null,
-        enabled: scheduleEnabled.checked,
+        enabled,
       });
     } else {
-      if (!scheduleEnabled.checked) {
-        cron = "";
-      }
       await api.put(
         `/hosts/${scope.hostId}/projects/${scope.projectName}/backup/settings`,
         { cron_override: cron || null }
       );
     }
-    await loadSchedule();
+    await loadScheduleSummary(scheduleState.selectedKey);
     scheduleStatus.textContent = "Saved.";
   } catch (err) {
     scheduleStatus.textContent = `Save failed: ${err.message}`;
@@ -1123,10 +1388,6 @@ function initScheduleControls() {
   populateSelect(daysOfMonthSelect, 1, 31);
   populateSelect(monthsSelect, 1, 12);
   populateScheduleScope();
-
-  scheduleEnabled.addEventListener("change", () => {
-    syncCronFromBuilder();
-  });
 
   customCron.addEventListener("change", () => {
     setBuilderEnabled(!customCron.checked);
@@ -1141,12 +1402,10 @@ function initScheduleControls() {
     input.addEventListener("change", syncCronFromBuilder);
   });
 
-  scheduleScope.addEventListener("change", () => {
-    loadSchedule();
-  });
-
   saveScheduleBtn.addEventListener("click", saveSchedule);
-  refreshScheduleBtn.addEventListener("click", loadSchedule);
+  refreshScheduleBtn.addEventListener("click", () => {
+    loadScheduleSummary(scheduleState.selectedKey);
+  });
 }
 
 function getActionLabel(button) {
@@ -1303,6 +1562,232 @@ function closeProjectDetailsModal() {
   }
 }
 
+function formatDuration(seconds) {
+  const total = Math.max(0, Math.floor(seconds));
+  const units = [
+    ["d", 86400],
+    ["h", 3600],
+    ["m", 60],
+    ["s", 1],
+  ];
+  const parts = [];
+  let remaining = total;
+  for (const [label, size] of units) {
+    if (remaining >= size || (label === "s" && parts.length === 0)) {
+      const value = Math.floor(remaining / size);
+      remaining -= value * size;
+      parts.push(`${value}${label}`);
+      if (parts.length >= 2) {
+        break;
+      }
+    }
+  }
+  return parts.join(" ");
+}
+
+function formatCountdown(value) {
+  if (!value) return "disabled";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "unknown";
+  const diff = date.getTime() - Date.now();
+  if (diff <= 0) return "due";
+  return `in ${formatDuration(Math.ceil(diff / 1000))}`;
+}
+
+function updateEventCountdowns() {
+  const nodes = document.querySelectorAll(".event-countdown");
+  nodes.forEach((node) => {
+    const timestamp = node.dataset.timestamp;
+    if (!timestamp) {
+      node.textContent = "";
+      return;
+    }
+    node.textContent = `(${formatCountdown(timestamp)})`;
+  });
+}
+
+function renderEventStatusList() {
+  if (!eventStatusList) {
+    return;
+  }
+  eventStatusList.innerHTML = "";
+  const items = eventStatusState.items || [];
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "No event data available.";
+    eventStatusList.appendChild(empty);
+    return;
+  }
+  items.forEach((entry) => {
+    const card = document.createElement("div");
+    card.className = `event-status-card${entry.enabled ? "" : " disabled"}`;
+
+    const head = document.createElement("div");
+    head.className = "event-status-head";
+
+    const title = document.createElement("div");
+    title.className = "event-status-title";
+    title.textContent = entry.label || entry.id;
+
+    const badge = document.createElement("span");
+    badge.className = "event-status-badge";
+    badge.textContent = entry.enabled ? "enabled" : "disabled";
+
+    head.appendChild(title);
+    head.appendChild(badge);
+
+    const desc = document.createElement("div");
+    desc.className = "event-status-desc";
+    desc.textContent = entry.description || "";
+
+    const meta = document.createElement("div");
+    meta.className = "event-status-meta";
+
+    const nextItem = document.createElement("div");
+    nextItem.className = "event-status-item";
+    const nextLabel = document.createElement("span");
+    nextLabel.textContent = "Next run: ";
+    const nextValue = document.createElement("strong");
+    const nextText = entry.enabled ? formatTimestamp(entry.next_run) : "disabled";
+    nextValue.textContent = nextText;
+    const nextCountdown = document.createElement("span");
+    nextCountdown.className = "event-countdown";
+    if (entry.enabled && entry.next_run) {
+      nextCountdown.dataset.timestamp = entry.next_run;
+      nextCountdown.textContent = `(${formatCountdown(entry.next_run)})`;
+    }
+    nextItem.appendChild(nextLabel);
+    nextItem.appendChild(nextValue);
+    nextItem.appendChild(nextCountdown);
+
+    const lastItem = document.createElement("div");
+    lastItem.className = "event-status-item";
+    const lastLabel = document.createElement("span");
+    lastLabel.textContent = "Last run: ";
+    const lastValue = document.createElement("strong");
+    lastValue.textContent = formatTimestamp(entry.last_run);
+    lastItem.appendChild(lastLabel);
+    lastItem.appendChild(lastValue);
+
+    const resultItem = document.createElement("div");
+    resultItem.className = "event-status-item";
+    const resultLabel = document.createElement("span");
+    resultLabel.textContent = "Last result: ";
+    const resultValue = document.createElement("strong");
+    resultValue.textContent = entry.last_result || "No runs yet";
+    if (entry.last_success === true) {
+      resultValue.classList.add("event-status-result", "ok");
+    } else if (entry.last_success === false) {
+      resultValue.classList.add("event-status-result", "fail");
+    }
+    resultItem.appendChild(resultLabel);
+    resultItem.appendChild(resultValue);
+
+    meta.appendChild(nextItem);
+    meta.appendChild(lastItem);
+    meta.appendChild(resultItem);
+
+    card.appendChild(head);
+    card.appendChild(desc);
+    card.appendChild(meta);
+
+    eventStatusList.appendChild(card);
+  });
+
+  updateEventCountdowns();
+}
+
+async function loadEventStatus() {
+  if (!eventStatusList) {
+    return { ok: false };
+  }
+  if (eventStatusState.loading) {
+    return { ok: false, busy: true };
+  }
+  eventStatusState.loading = true;
+  eventStatusList.innerHTML = '<div class="empty">Loading...</div>';
+  try {
+    const data = await api.get("/events/status");
+    eventStatusState.items = data.events || [];
+    eventStatusState.updatedAt = data.generated_at || null;
+    if (eventStatusUpdated) {
+      eventStatusUpdated.textContent = `Updated: ${formatTimestamp(eventStatusState.updatedAt)}`;
+    }
+    renderEventStatusList();
+    return { ok: true };
+  } catch (err) {
+    eventStatusList.innerHTML = `<div class="empty">${err.message}</div>`;
+    if (eventStatusUpdated) {
+      eventStatusUpdated.textContent = "Updated: --";
+    }
+    return { ok: false, error: err.message };
+  } finally {
+    eventStatusState.loading = false;
+  }
+}
+
+function startEventStatusTimer() {
+  if (eventStatusState.timerId) {
+    return;
+  }
+  eventStatusState.timerId = window.setInterval(updateEventCountdowns, 1000);
+}
+
+function stopEventStatusTimer() {
+  if (!eventStatusState.timerId) {
+    return;
+  }
+  window.clearInterval(eventStatusState.timerId);
+  eventStatusState.timerId = null;
+}
+
+function updateEventAutoButton() {
+  if (!toggleEventAutoBtn) {
+    return;
+  }
+  toggleEventAutoBtn.textContent = `Auto refresh: ${eventStatusState.autoRefreshEnabled ? "On" : "Off"}`;
+  toggleEventAutoBtn.classList.toggle("active", eventStatusState.autoRefreshEnabled);
+}
+
+function startEventStatusAutoRefresh() {
+  if (!eventStatusState.autoRefreshEnabled || eventStatusState.autoRefreshId) {
+    return;
+  }
+  eventStatusState.autoRefreshId = window.setInterval(() => {
+    loadEventStatus();
+  }, EVENT_STATUS_REFRESH_MS);
+}
+
+function stopEventStatusAutoRefresh() {
+  if (!eventStatusState.autoRefreshId) {
+    return;
+  }
+  window.clearInterval(eventStatusState.autoRefreshId);
+  eventStatusState.autoRefreshId = null;
+}
+
+function openEventStatusModal() {
+  if (!eventStatusModal) {
+    return;
+  }
+  eventStatusModal.classList.remove("hidden");
+  updateEventAutoButton();
+  loadEventStatus();
+  startEventStatusTimer();
+  if (eventStatusState.autoRefreshEnabled) {
+    startEventStatusAutoRefresh();
+  }
+}
+
+function closeEventStatusModal() {
+  if (eventStatusModal) {
+    eventStatusModal.classList.add("hidden");
+  }
+  stopEventStatusTimer();
+  stopEventStatusAutoRefresh();
+}
+
 async function openBackupScheduleModal() {
   if (!backupScheduleModal) {
     return;
@@ -1312,17 +1797,12 @@ async function openBackupScheduleModal() {
     initScheduleControls();
     scheduleState.initialized = true;
   }
-  populateScheduleScope();
-  if (scheduleScope && scheduleScope.value === "global" && state.selectedProjects.size === 1) {
+  let preferredKey = null;
+  if (state.selectedProjects.size === 1) {
     const [onlyProject] = state.selectedProjects;
-    const hasOption = Array.from(scheduleScope.options).some(
-      (option) => option.value === onlyProject
-    );
-    if (hasOption) {
-      scheduleScope.value = onlyProject;
-    }
+    preferredKey = onlyProject;
   }
-  const result = await loadSchedule();
+  const result = await loadScheduleSummary(preferredKey);
   if (!result.ok && result.error) {
     showToast(result.error, "error");
   }
@@ -2393,7 +2873,6 @@ function applyProjectFilters(entries) {
   const query = state.projectFilters.query.trim().toLowerCase();
   const statusFilter = state.projectFilters.status || "all";
   const updatesFilter = state.projectFilters.updates || "all";
-  const backupFilter = state.projectFilters.backup || "all";
   return entries.filter((entry) => {
     if (query) {
       if (!entry.projectName.toLowerCase().includes(query)) {
@@ -2417,14 +2896,6 @@ function applyProjectFilters(entries) {
         return false;
       }
     }
-    if (backupFilter !== "all") {
-      if (backupFilter === "enabled" && !entry.backupEnabled) {
-        return false;
-      }
-      if (backupFilter === "disabled" && entry.backupEnabled) {
-        return false;
-      }
-    }
     return true;
   });
 }
@@ -2442,10 +2913,6 @@ function sortProjectEntries(entries) {
         statusRank(normalizeProjectStatus(b));
     } else if (sortBy === "updates") {
       cmp = updateRank(a.updatesAvailable) - updateRank(b.updatesAvailable);
-    } else if (sortBy === "backup") {
-      const aEnabled = a.backupEnabled ? 1 : 0;
-      const bEnabled = b.backupEnabled ? 1 : 0;
-      cmp = aEnabled - bEnabled;
     } else {
       cmp = a.projectName.localeCompare(b.projectName);
     }
@@ -2718,48 +3185,6 @@ function renderProjectList() {
 
     const statusInfo = projectStatusLabel(entry.status);
     const updatesInfo = updateBadgeLabel(entry.updatesAvailable);
-
-    const backupToggle = row.querySelector(".backup-checkbox");
-    if (backupToggle) {
-      backupToggle.checked = Boolean(entry.backupEnabled);
-      backupToggle.disabled = !state.backupScheduleAvailable;
-      if (!state.backupScheduleAvailable) {
-        backupToggle.title = "Backup scheduling unavailable";
-      } else {
-        backupToggle.title = "";
-      }
-      backupToggle.addEventListener("change", async () => {
-        if (!state.backupScheduleAvailable) {
-          backupToggle.checked = Boolean(entry.backupEnabled);
-          return;
-        }
-        const desired = backupToggle.checked;
-        backupToggle.disabled = true;
-        try {
-          const data = await api.put(
-            `/hosts/${entry.hostId}/projects/${entry.projectName}/backup/settings`,
-            { enabled: desired }
-          );
-          const host = state.hosts.find((item) => item.host_id === entry.hostId);
-          if (host) {
-            host.backup_enabled = host.backup_enabled || {};
-            host.backup_last_at = host.backup_last_at || {};
-            host.backup_last_success = host.backup_last_success || {};
-            host.backup_last_message = host.backup_last_message || {};
-            host.backup_enabled[entry.projectName] = data.enabled;
-            host.backup_last_at[entry.projectName] = data.last_backup_at;
-            host.backup_last_success[entry.projectName] = data.last_backup_success;
-            host.backup_last_message[entry.projectName] = data.last_backup_message;
-          }
-          renderProjectList();
-        } catch (err) {
-          backupToggle.checked = !desired;
-          alert(`Failed to update backup setting: ${err.message}`);
-        } finally {
-          backupToggle.disabled = false;
-        }
-      });
-    }
 
     const deleteBtn = row.querySelector(".project-delete");
     if (deleteBtn) {
@@ -3349,9 +3774,6 @@ function clearProjectFilters() {
   }
   if (headerFilterUpdates) {
     headerFilterUpdates.value = "all";
-  }
-  if (headerFilterBackup) {
-    headerFilterBackup.value = "all";
   }
   updateProjectFilterState();
   updateProjectFilterIndicators();
@@ -3988,6 +4410,9 @@ document.addEventListener("keydown", (event) => {
   if (configModal && !configModal.classList.contains("hidden")) {
     closeConfigModal();
   }
+  if (eventStatusModal && !eventStatusModal.classList.contains("hidden")) {
+    closeEventStatusModal();
+  }
 });
 
 closeLogsModalBtn.addEventListener("click", closeLogsModal);
@@ -4007,6 +4432,34 @@ closeBackupScheduleModalBtn.addEventListener("click", closeBackupScheduleModal);
 backupScheduleModal
   .querySelector(".modal-backdrop")
   .addEventListener("click", closeBackupScheduleModal);
+if (openEventStatusBtn) {
+  openEventStatusBtn.addEventListener("click", openEventStatusModal);
+}
+if (closeEventStatusModalBtn) {
+  closeEventStatusModalBtn.addEventListener("click", closeEventStatusModal);
+}
+if (refreshEventStatusBtn) {
+  refreshEventStatusBtn.addEventListener("click", () => {
+    loadEventStatus();
+  });
+}
+if (toggleEventAutoBtn) {
+  toggleEventAutoBtn.addEventListener("click", () => {
+    eventStatusState.autoRefreshEnabled = !eventStatusState.autoRefreshEnabled;
+    updateEventAutoButton();
+    if (eventStatusState.autoRefreshEnabled) {
+      startEventStatusAutoRefresh();
+      loadEventStatus();
+    } else {
+      stopEventStatusAutoRefresh();
+    }
+  });
+}
+if (eventStatusModal) {
+  eventStatusModal
+    .querySelector(".modal-backdrop")
+    .addEventListener("click", closeEventStatusModal);
+}
 if (openCreateProjectBtn) {
   openCreateProjectBtn.addEventListener("click", openCreateProjectModal);
 }
@@ -4156,13 +4609,6 @@ if (headerFilterStatus) {
 }
 if (headerFilterUpdates) {
   headerFilterUpdates.addEventListener("change", () => {
-    updateProjectFilterState();
-    updateProjectFilterIndicators();
-    renderProjectList();
-  });
-}
-if (headerFilterBackup) {
-  headerFilterBackup.addEventListener("change", () => {
     updateProjectFilterState();
     updateProjectFilterIndicators();
     renderProjectList();

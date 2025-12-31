@@ -27,6 +27,7 @@
         </div>
         <div class="controls">
           <button class="btn subtle" id="openConfig">Configuration</button>
+          <button class="btn subtle" id="openEventStatus">Events</button>
           <button class="btn ghost" id="logoutBtn">Log out</button>
         </div>
       </header>
@@ -155,33 +156,12 @@
                     </div>
                   </div>
                 </th>
-                <th class="col-backup">
-                  <div class="header-controls">
-                    <button class="sort-header" data-sort="backup" type="button">
-                      <span>Backup?</span>
-                      <span class="sort-indicator"></span>
-                    </button>
-                    <button class="filter-toggle" data-filter="backup" type="button" aria-label="Filter backups" title="Filter backups">
-                      <span class="material-symbols-outlined action-icon">filter_list</span>
-                    </button>
-                    <div class="filter-menu hidden" data-filter-menu="backup">
-                      <label class="control">
-                        Backup
-                        <select id="headerFilterBackup">
-                          <option value="all">All</option>
-                          <option value="enabled">Enabled</option>
-                          <option value="disabled">Disabled</option>
-                        </select>
-                      </label>
-                    </div>
-                  </div>
-                </th>
                 <th class="col-actions">Actions</th>
               </tr>
             </thead>
             <tbody id="projectList">
               <tr class="list-row empty">
-                <td colspan="6">Select a host to see projects.</td>
+                <td colspan="5">Select a host to see projects.</td>
               </tr>
             </tbody>
           </table>
@@ -275,12 +255,6 @@
         </td>
         <td class="project-cell project-updates">
           <span class="material-symbols-outlined updates-icon" title="Updates"></span>
-        </td>
-        <td class="project-cell project-backup">
-          <label class="toggle backup-toggle">
-            <input class="backup-checkbox" type="checkbox" aria-label="Backup enabled" />
-            <span>Backup?</span>
-          </label>
         </td>
         <td class="project-cell project-actions">
           <div class="action-menu">
@@ -449,7 +423,9 @@
             <div class="modal-title">Compose editor</div>
             <div class="modal-subtitle" id="composeTarget"></div>
           </div>
-          <button class="btn subtle" id="closeComposeModal">Close</button>
+          <button class="modal-close" id="closeComposeModal" aria-label="Close">
+            <span class="material-symbols-outlined">close</span>
+          </button>
         </header>
         <div class="compose-panel">
           <div class="compose-header">
@@ -480,7 +456,9 @@
             <div class="modal-title">Logs</div>
             <div class="modal-subtitle" id="logsTarget"></div>
           </div>
-          <button class="btn subtle" id="closeLogsModal">Close</button>
+          <button class="modal-close" id="closeLogsModal" aria-label="Close">
+            <span class="material-symbols-outlined">close</span>
+          </button>
         </header>
         <div class="logs-controls">
           <label class="control">
@@ -516,7 +494,9 @@
             <div class="modal-title">Project details</div>
             <div class="modal-subtitle" id="projectDetailsTitle"></div>
           </div>
-          <button class="btn subtle" id="closeProjectDetailsModal">Close</button>
+          <button class="modal-close" id="closeProjectDetailsModal" aria-label="Close">
+            <span class="material-symbols-outlined">close</span>
+          </button>
         </header>
         <div class="modal-body">
           <div class="details-grid">
@@ -545,6 +525,33 @@
       </div>
     </div>
 
+    <div class="modal hidden" id="eventStatusModal">
+      <div class="modal-backdrop"></div>
+      <div class="modal-card">
+        <header class="modal-header">
+          <div>
+            <div class="modal-title">Background events</div>
+            <div class="modal-subtitle">Status of timed background tasks.</div>
+          </div>
+          <button class="modal-close" id="closeEventStatusModal" aria-label="Close">
+            <span class="material-symbols-outlined">close</span>
+          </button>
+        </header>
+        <div class="modal-body event-status-body">
+          <div class="event-status-header">
+            <div class="event-status-updated" id="eventStatusUpdated">Updated: --</div>
+            <div class="event-status-actions">
+              <button class="btn ghost event-auto-toggle" id="toggleEventAuto">Auto refresh: On</button>
+              <button class="btn subtle" id="refreshEventStatus">Refresh</button>
+            </div>
+          </div>
+          <div class="event-status-list" id="eventStatusList">
+            <div class="empty">Loading...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="modal hidden" id="backupScheduleModal">
       <div class="modal-backdrop"></div>
       <div class="modal-card">
@@ -553,93 +560,111 @@
             <div class="modal-title">Backup schedule</div>
             <div class="modal-subtitle">Configure when scheduled backups run (local time).</div>
           </div>
-          <button class="btn subtle" id="closeBackupScheduleModal">Close</button>
+          <button class="modal-close" id="closeBackupScheduleModal" aria-label="Close">
+            <span class="material-symbols-outlined">close</span>
+          </button>
         </header>
         <div class="modal-body">
           <div class="schedule-body">
-            <div class="schedule-field">
-              <label for="scheduleScope">Schedule for</label>
-              <select id="scheduleScope"></select>
-              <div class="field-hint" id="scheduleScopeHint"></div>
+            <div class="schedule-summary">
+              <table class="schedule-summary-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Last run</th>
+                    <th>Next run</th>
+                    <th class="center">Enabled</th>
+                    <th class="center">Override</th>
+                  </tr>
+                </thead>
+                <tbody id="scheduleSummaryBody">
+                  <tr class="empty">
+                    <td colspan="5">Loading...</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
-            <label class="toggle schedule-enable">
-              <input type="checkbox" id="scheduleEnabled" />
-              <span id="scheduleEnabledLabel">Enable scheduled backups</span>
-            </label>
 
-            <div class="schedule-grid">
-              <div class="schedule-field">
-                <label for="scheduleTime">Time (local)</label>
-                <input id="scheduleTime" type="time" step="60" />
+            <div class="schedule-config" id="scheduleConfig">
+              <div class="schedule-field schedule-scope hidden">
+                <label for="scheduleScope">Schedule for</label>
+                <select id="scheduleScope"></select>
               </div>
+              <div class="field-hint schedule-scope-hint" id="scheduleScopeHint"></div>
+              <div class="schedule-grid">
+                <div class="schedule-field">
+                  <label for="scheduleTime">Time (local)</label>
+                  <input id="scheduleTime" type="time" step="60" />
+                </div>
 
-              <div class="schedule-field">
-                <span class="field-label">Days of week</span>
-                <div class="schedule-days" id="scheduleDaysOfWeek">
-                  <label class="schedule-day">
-                    <input type="checkbox" value="1" />
-                    <span>Mon</span>
-                  </label>
-                  <label class="schedule-day">
-                    <input type="checkbox" value="2" />
-                    <span>Tue</span>
-                  </label>
-                  <label class="schedule-day">
-                    <input type="checkbox" value="3" />
-                    <span>Wed</span>
-                  </label>
-                  <label class="schedule-day">
-                    <input type="checkbox" value="4" />
-                    <span>Thu</span>
-                  </label>
-                  <label class="schedule-day">
-                    <input type="checkbox" value="5" />
-                    <span>Fri</span>
-                  </label>
-                  <label class="schedule-day">
-                    <input type="checkbox" value="6" />
-                    <span>Sat</span>
-                  </label>
-                  <label class="schedule-day">
-                    <input type="checkbox" value="0" />
-                    <span>Sun</span>
-                  </label>
+                <div class="schedule-field">
+                  <span class="field-label">Days of week</span>
+                  <div class="schedule-days" id="scheduleDaysOfWeek">
+                    <label class="schedule-day">
+                      <input type="checkbox" value="1" />
+                      <span>Mon</span>
+                    </label>
+                    <label class="schedule-day">
+                      <input type="checkbox" value="2" />
+                      <span>Tue</span>
+                    </label>
+                    <label class="schedule-day">
+                      <input type="checkbox" value="3" />
+                      <span>Wed</span>
+                    </label>
+                    <label class="schedule-day">
+                      <input type="checkbox" value="4" />
+                      <span>Thu</span>
+                    </label>
+                    <label class="schedule-day">
+                      <input type="checkbox" value="5" />
+                      <span>Fri</span>
+                    </label>
+                    <label class="schedule-day">
+                      <input type="checkbox" value="6" />
+                      <span>Sat</span>
+                    </label>
+                    <label class="schedule-day">
+                      <input type="checkbox" value="0" />
+                      <span>Sun</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="schedule-field">
+                  <label for="scheduleDaysOfMonth">Days of month</label>
+                  <select id="scheduleDaysOfMonth" multiple size="6"></select>
+                  <div class="field-hint">Leave empty for any day.</div>
+                </div>
+
+                <div class="schedule-field">
+                  <label for="scheduleMonths">Months</label>
+                  <select id="scheduleMonths" multiple size="6"></select>
+                  <div class="field-hint">Leave empty for any month.</div>
                 </div>
               </div>
 
               <div class="schedule-field">
-                <label for="scheduleDaysOfMonth">Days of month</label>
-                <select id="scheduleDaysOfMonth" multiple size="6"></select>
-                <div class="field-hint">Leave empty for any day.</div>
+                <label for="cronExpression">Cron expression</label>
+                <input id="cronExpression" type="text" />
+                <label class="toggle schedule-custom">
+                  <input type="checkbox" id="customCron" />
+                  <span>Use custom cron</span>
+                </label>
               </div>
 
-              <div class="schedule-field">
-                <label for="scheduleMonths">Months</label>
-                <select id="scheduleMonths" multiple size="6"></select>
-                <div class="field-hint">Leave empty for any month.</div>
+              <div class="schedule-info">
+                <span>Last run: <strong id="scheduleLast">never</strong></span>
+                <span>Next run: <strong id="scheduleNext">never</strong></span>
               </div>
-            </div>
 
-            <div class="schedule-field">
-              <label for="cronExpression">Cron expression</label>
-              <input id="cronExpression" type="text" />
-              <label class="toggle schedule-custom">
-                <input type="checkbox" id="customCron" />
-                <span>Use custom cron</span>
-              </label>
-            </div>
+              <div class="schedule-actions">
+                <button class="btn primary" id="saveSchedule">Save schedule</button>
+                <button class="btn subtle" id="refreshSchedule">Refresh</button>
+              </div>
 
-            <div class="schedule-info">
-              <span>Last run: <strong id="scheduleLast">never</strong></span>
-              <span>Next run: <strong id="scheduleNext">unknown</strong></span>
+              <div class="schedule-status" id="scheduleStatus"></div>
             </div>
-
-            <div class="schedule-actions">
-              <button class="btn primary" id="saveSchedule">Save schedule</button>
-              <button class="btn subtle" id="refreshSchedule">Refresh</button>
-            </div>
-
-            <div class="schedule-status" id="scheduleStatus"></div>
           </div>
         </div>
       </div>
@@ -653,7 +678,9 @@
             <div class="modal-title">Configuration</div>
             <div class="modal-subtitle">Manage hosts and backup targets stored in the database.</div>
           </div>
-          <button class="btn subtle" id="closeConfigModal">Close</button>
+          <button class="modal-close" id="closeConfigModal" aria-label="Close">
+            <span class="material-symbols-outlined">close</span>
+          </button>
         </header>
         <div class="modal-body config-body">
           <div class="config-tabs">
@@ -737,7 +764,9 @@
             <div class="modal-title">Create project</div>
             <div class="modal-subtitle">Provision a new compose project on a host.</div>
           </div>
-          <button class="btn subtle" id="closeCreateProjectModal">Close</button>
+          <button class="modal-close" id="closeCreateProjectModal" aria-label="Close">
+            <span class="material-symbols-outlined">close</span>
+          </button>
         </header>
         <div class="modal-body">
           <div class="config-grid">
@@ -791,7 +820,9 @@
             <div class="modal-title">Delete project</div>
             <div class="modal-subtitle" id="deleteProjectTarget"></div>
           </div>
-          <button class="btn subtle" id="closeDeleteProjectModal">Close</button>
+          <button class="modal-close" id="closeDeleteProjectModal" aria-label="Close">
+            <span class="material-symbols-outlined">close</span>
+          </button>
         </header>
         <div class="modal-body confirm-body">
           <div class="confirm-text">Delete this project?</div>
