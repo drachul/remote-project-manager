@@ -107,6 +107,27 @@ logger = logging.getLogger("rpm")
 TOKEN_CLEANUP_INTERVAL_SECONDS = 60
 DB_OPEN_ATTEMPTS = int(os.getenv("DB_OPEN_ATTEMPTS", "5"))
 DB_OPEN_DELAY_SECONDS = float(os.getenv("DB_OPEN_DELAY_SECONDS", "0.2"))
+FD_LIMIT_TARGET = int(os.getenv("APP_FD_LIMIT", "4096"))
+FD_TRACK_INTERVAL_SECONDS = int(os.getenv("APP_FD_TRACK_INTERVAL", "300"))
+FD_TRACK_TOP = int(os.getenv("APP_FD_TRACK_TOP", "0"))
+
+
+def _ensure_fd_limit() -> None:
+    if FD_LIMIT_TARGET <= 0:
+        return
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (ValueError, OSError) as exc:
+        logger.debug("FD limit check failed: %s", exc)
+        return
+    target = min(hard, max(soft, FD_LIMIT_TARGET))
+    if target <= soft:
+        return
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        logger.debug("FD limit raised soft=%s hard=%s", target, hard)
+    except (ValueError, OSError) as exc:
+        logger.debug("FD limit update failed soft=%s hard=%s error=%s", target, hard, exc)
 
 
 @app.get("/")
@@ -118,6 +139,7 @@ def ui_index() -> HTMLResponse:
 @app.on_event("startup")
 async def load_settings() -> None:
     app.state.loop = asyncio.get_running_loop()
+    _ensure_fd_limit()
     app.state.config = load_config()
     _configure_logging(app.state.config.log_level)
     app.state.db_path = _db_path()
@@ -150,17 +172,20 @@ async def load_settings() -> None:
         _set_event_next_run("update_refresh", now + timedelta(seconds=app.state.update_interval_seconds))
     if app.state.db_path:
         _set_event_next_run("token_cleanup", now + timedelta(seconds=TOKEN_CLEANUP_INTERVAL_SECONDS))
+    if FD_TRACK_INTERVAL_SECONDS > 0:
+        _set_event_next_run("fd_track", now + timedelta(seconds=FD_TRACK_INTERVAL_SECONDS))
     app.state.state_task = _start_state_task()
     app.state.update_task = _start_update_task()
     app.state.backup_task = _start_backup_task()
     app.state.token_cleanup_task = _start_token_cleanup_task()
+    app.state.fd_task = _start_fd_track_task()
     logger.info("Startup complete")
 
 
 @app.on_event("shutdown")
 async def shutdown_tasks() -> None:
     logger.info("Shutting down")
-    for task_name in ("state_task", "update_task", "backup_task", "token_cleanup_task"):
+    for task_name in ("state_task", "update_task", "backup_task", "token_cleanup_task", "fd_task"):
         task = getattr(app.state, task_name, None)
         if not task:
             continue
@@ -200,6 +225,10 @@ EVENT_DEFINITIONS = {
     "token_cleanup": {
         "label": "Token cleanup",
         "description": "Removes expired authentication tokens from the database.",
+    },
+    "fd_track": {
+        "label": "FD usage tracker",
+        "description": "Logs periodic file descriptor usage to help spot leaks.",
     },
 }
 
@@ -562,6 +591,68 @@ def _log_db_path_diagnostics(path: str) -> None:
         logger.debug("DB path filesystem stats unavailable for %s", parent)
     _probe_db_path_access(path)
     _log_fd_diagnostics()
+
+
+def _collect_fd_stats() -> Optional[dict]:
+    fd_dir = "/proc/self/fd"
+    try:
+        entries = list(os.scandir(fd_dir))
+    except OSError as exc:
+        logger.debug("FD scan failed path=%s error=%s", fd_dir, exc)
+        return None
+    counts = {
+        "total": 0,
+        "socket": 0,
+        "pipe": 0,
+        "anon": 0,
+        "file": 0,
+        "other": 0,
+    }
+    targets = {} if FD_TRACK_TOP > 0 else None
+    for entry in entries:
+        counts["total"] += 1
+        try:
+            target = os.readlink(entry.path)
+        except OSError:
+            counts["other"] += 1
+            continue
+        if target.startswith("socket:"):
+            counts["socket"] += 1
+        elif target.startswith("pipe:"):
+            counts["pipe"] += 1
+        elif target.startswith("anon_inode:"):
+            counts["anon"] += 1
+        elif target.startswith("/"):
+            counts["file"] += 1
+        else:
+            counts["other"] += 1
+        if targets is not None:
+            targets[target] = targets.get(target, 0) + 1
+    if targets is not None:
+        counts["targets"] = targets
+    return counts
+
+
+def _log_fd_usage() -> None:
+    stats = _collect_fd_stats()
+    if not stats:
+        return
+    logger.debug(
+        "FD usage total=%s sockets=%s pipes=%s anon=%s files=%s other=%s",
+        stats.get("total"),
+        stats.get("socket"),
+        stats.get("pipe"),
+        stats.get("anon"),
+        stats.get("file"),
+        stats.get("other"),
+    )
+    targets = stats.get("targets")
+    if FD_TRACK_TOP > 0 and targets:
+        items = sorted(targets.items(), key=lambda item: (-item[1], item[0]))[:FD_TRACK_TOP]
+        summary = ", ".join(
+            f"{count}x {target[:120]}" for target, count in items
+        )
+        logger.debug("FD top targets: %s", summary)
 
 
 def _ensure_db(path: str, *, log_exception: bool = True) -> None:
@@ -1944,6 +2035,12 @@ def _start_token_cleanup_task() -> Optional[asyncio.Task]:
     return asyncio.create_task(_token_cleanup_loop())
 
 
+def _start_fd_track_task() -> Optional[asyncio.Task]:
+    if FD_TRACK_INTERVAL_SECONDS <= 0:
+        return None
+    return asyncio.create_task(_fd_track_loop())
+
+
 def _restart_backup_task() -> None:
     def _restart() -> None:
         task = getattr(app.state, "backup_task", None)
@@ -2022,6 +2119,21 @@ async def _token_cleanup_loop() -> None:
             "token_cleanup", run_at + timedelta(seconds=TOKEN_CLEANUP_INTERVAL_SECONDS)
         )
         await asyncio.sleep(TOKEN_CLEANUP_INTERVAL_SECONDS)
+
+
+async def _fd_track_loop() -> None:
+    interval = max(1, FD_TRACK_INTERVAL_SECONDS)
+    while True:
+        run_at = _now()
+        try:
+            await asyncio.to_thread(_log_fd_usage)
+            _record_event_result("fd_track", True, "FD usage logged", run_at)
+        except Exception as exc:
+            _record_event_result("fd_track", False, str(exc), run_at)
+            logger.debug("FD tracking failed: %s", exc)
+        _set_event_next_run("fd_track", run_at + timedelta(seconds=interval))
+        await asyncio.sleep(interval)
+
 
 
 async def _set_state_interval(seconds: int) -> None:
@@ -2460,6 +2572,9 @@ def _build_event_status_entries() -> List[EventStatusEntry]:
         elif key == "token_cleanup":
             interval = TOKEN_CLEANUP_INTERVAL_SECONDS
             enabled = bool(app.state.db_path) and interval > 0
+        elif key == "fd_track":
+            interval = FD_TRACK_INTERVAL_SECONDS
+            enabled = interval > 0
 
         if enabled and not next_run and interval:
             base = last_run or now
