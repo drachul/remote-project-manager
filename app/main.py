@@ -633,26 +633,25 @@ def _collect_fd_stats() -> Optional[dict]:
     return counts
 
 
-def _log_fd_usage() -> None:
+def _log_fd_usage() -> Optional[str]:
     stats = _collect_fd_stats()
     if not stats:
-        return
-    logger.debug(
-        "FD usage total=%s sockets=%s pipes=%s anon=%s files=%s other=%s",
-        stats.get("total"),
-        stats.get("socket"),
-        stats.get("pipe"),
-        stats.get("anon"),
-        stats.get("file"),
-        stats.get("other"),
+        return None
+    summary = (
+        f"total={stats.get('total')} sockets={stats.get('socket')} "
+        f"pipes={stats.get('pipe')} anon={stats.get('anon')} "
+        f"files={stats.get('file')} other={stats.get('other')}"
     )
+    logger.debug("FD usage %s", summary)
     targets = stats.get("targets")
     if FD_TRACK_TOP > 0 and targets:
         items = sorted(targets.items(), key=lambda item: (-item[1], item[0]))[:FD_TRACK_TOP]
-        summary = ", ".join(
+        top_summary = ", ".join(
             f"{count}x {target[:120]}" for target, count in items
         )
-        logger.debug("FD top targets: %s", summary)
+        logger.debug("FD top targets: %s", top_summary)
+        summary = f"{summary}; top={top_summary}"
+    return summary
 
 
 def _ensure_db(path: str, *, log_exception: bool = True) -> None:
@@ -2126,8 +2125,11 @@ async def _fd_track_loop() -> None:
     while True:
         run_at = _now()
         try:
-            await asyncio.to_thread(_log_fd_usage)
-            _record_event_result("fd_track", True, "FD usage logged", run_at)
+            summary = await asyncio.to_thread(_log_fd_usage)
+            if summary:
+                _record_event_result("fd_track", True, summary, run_at)
+            else:
+                _record_event_result("fd_track", False, "FD usage unavailable", run_at)
         except Exception as exc:
             _record_event_result("fd_track", False, str(exc), run_at)
             logger.debug("FD tracking failed: %s", exc)
