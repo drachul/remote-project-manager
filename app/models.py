@@ -69,6 +69,40 @@ class ProjectStatusResponse(BaseModel):
     issues: List[str]
 
 
+class ProjectStatEntry(BaseModel):
+    service: str
+    name: str
+    cpu_percent: Optional[str] = None
+    mem_usage: Optional[str] = None
+    mem_percent: Optional[str] = None
+    net_io: Optional[str] = None
+    block_io: Optional[str] = None
+    pids: Optional[int] = None
+    uptime_seconds: Optional[int] = None
+    restarts: Optional[int] = None
+
+
+class ProjectStatsResponse(BaseModel):
+    host_id: str
+    project: str
+    stats: List[ProjectStatEntry]
+
+
+class ProjectPortEntry(BaseModel):
+    service: str
+    name: str
+    container_port: Optional[str] = None
+    protocol: Optional[str] = None
+    host_ip: Optional[str] = None
+    host_port: Optional[str] = None
+
+
+class ProjectPortsResponse(BaseModel):
+    host_id: str
+    project: str
+    ports: List[ProjectPortEntry]
+
+
 class OperationResponse(BaseModel):
     host_id: str
     project: str

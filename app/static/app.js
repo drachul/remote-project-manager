@@ -47,6 +47,8 @@ const projectDetailsPath = document.getElementById("projectDetailsPath");
 const projectDetailsBackup = document.getElementById("projectDetailsBackup");
 const projectDetailsBackupSuccess = document.getElementById("projectDetailsBackupSuccess");
 const projectDetailsStatus = document.getElementById("projectDetailsStatus");
+const projectDetailsStatsBody = document.getElementById("projectDetailsStatsBody");
+const projectDetailsPortsBody = document.getElementById("projectDetailsPortsBody");
 const openBackupScheduleBtn = document.getElementById("openBackupSchedule");
 const backupScheduleModal = document.getElementById("backupScheduleModal");
 const closeBackupScheduleModalBtn = document.getElementById("closeBackupScheduleModal");
@@ -174,6 +176,10 @@ const logsState = {
   hostId: null,
   projectName: null,
   stream: null,
+};
+
+const projectDetailsState = {
+  key: null,
 };
 
 const scheduleState = {
@@ -1554,12 +1560,208 @@ function openProjectDetailsModal(entry) {
   if (projectDetailsStatus) {
     projectDetailsStatus.textContent = formatTimestamp(entry.refreshedAt);
   }
+  projectDetailsState.key = `${entry.hostId}::${entry.projectName}`;
+  setProjectDetailsPortsMessage("Loading...");
+  setProjectDetailsStatsMessage("Loading...");
+  loadProjectDetailsPorts(entry.hostId, entry.projectName);
+  loadProjectDetailsStats(entry.hostId, entry.projectName);
+}
+
+
+function setProjectDetailsPortsMessage(message) {
+  if (!projectDetailsPortsBody) {
+    return;
+  }
+  projectDetailsPortsBody.innerHTML = "";
+  const row = document.createElement("tr");
+  row.className = "empty";
+  const cell = document.createElement("td");
+  cell.colSpan = 4;
+  cell.textContent = message;
+  row.appendChild(cell);
+  projectDetailsPortsBody.appendChild(row);
+}
+
+function renderProjectPorts(entries) {
+  if (!projectDetailsPortsBody) {
+    return;
+  }
+  projectDetailsPortsBody.innerHTML = "";
+  if (!entries || !entries.length) {
+    setProjectDetailsPortsMessage("No port mappings.");
+    return;
+  }
+  const sorted = [...entries].sort((a, b) => {
+    const nameA = (a.service || a.name || "").toLowerCase();
+    const nameB = (b.service || b.name || "").toLowerCase();
+    if (nameA === nameB) {
+      const portA = `${a.container_port || ""}/${a.protocol || ""}`;
+      const portB = `${b.container_port || ""}/${b.protocol || ""}`;
+      return portA.localeCompare(portB);
+    }
+    return nameA.localeCompare(nameB);
+  });
+  sorted.forEach((entry) => {
+    const row = document.createElement("tr");
+    const serviceCell = document.createElement("td");
+    serviceCell.textContent = entry.service || entry.name || "unknown";
+
+    const containerCell = document.createElement("td");
+    containerCell.className = "mono";
+    const containerPort = entry.container_port || "n/a";
+    const protocol = entry.protocol ? `/${entry.protocol}` : "";
+    containerCell.textContent = `${containerPort}${protocol}`;
+
+    const hostIpCell = document.createElement("td");
+    hostIpCell.className = "mono";
+    hostIpCell.textContent = entry.host_ip || "n/a";
+
+    const hostPortCell = document.createElement("td");
+    hostPortCell.className = "mono";
+    hostPortCell.textContent = entry.host_port || "n/a";
+
+    row.appendChild(serviceCell);
+    row.appendChild(containerCell);
+    row.appendChild(hostIpCell);
+    row.appendChild(hostPortCell);
+    projectDetailsPortsBody.appendChild(row);
+  });
+}
+
+async function loadProjectDetailsPorts(hostId, projectName) {
+  if (!projectDetailsPortsBody) {
+    return;
+  }
+  const requestKey = `${hostId}::${projectName}`;
+  projectDetailsState.key = requestKey;
+  try {
+    const data = await api.get(`/hosts/${hostId}/projects/${projectName}/ports`);
+    if (projectDetailsState.key !== requestKey) {
+      return;
+    }
+    renderProjectPorts(data.ports || []);
+  } catch (err) {
+    if (projectDetailsState.key !== requestKey) {
+      return;
+    }
+    setProjectDetailsPortsMessage(`Error: ${err.message}`);
+  }
+}
+
+function setProjectDetailsStatsMessage(message) {
+  if (!projectDetailsStatsBody) {
+    return;
+  }
+  projectDetailsStatsBody.innerHTML = "";
+  const row = document.createElement("tr");
+  row.className = "empty";
+  const cell = document.createElement("td");
+  cell.colSpan = 8;
+  cell.textContent = message;
+  row.appendChild(cell);
+  projectDetailsStatsBody.appendChild(row);
+}
+
+function formatProjectStatsMem(entry) {
+  if (!entry.mem_usage) {
+    return "n/a";
+  }
+  if (entry.mem_percent) {
+    return `${entry.mem_usage} (${entry.mem_percent})`;
+  }
+  return entry.mem_usage;
+}
+
+function formatProjectStatsUptime(entry) {
+  if (entry.uptime_seconds === null || entry.uptime_seconds === undefined) {
+    return "n/a";
+  }
+  return formatDuration(entry.uptime_seconds);
+}
+
+function renderProjectStats(entries) {
+  if (!projectDetailsStatsBody) {
+    return;
+  }
+  projectDetailsStatsBody.innerHTML = "";
+  if (!entries || !entries.length) {
+    setProjectDetailsStatsMessage("No stats available.");
+    return;
+  }
+  const sorted = [...entries].sort((a, b) => {
+    const nameA = (a.service || a.name || "").toLowerCase();
+    const nameB = (b.service || b.name || "").toLowerCase();
+    return nameA.localeCompare(nameB);
+  });
+  sorted.forEach((entry) => {
+    const row = document.createElement("tr");
+    const serviceCell = document.createElement("td");
+    serviceCell.textContent = entry.service || entry.name || "unknown";
+
+    const cpuCell = document.createElement("td");
+    cpuCell.className = "mono";
+    cpuCell.textContent = entry.cpu_percent || "n/a";
+
+    const memCell = document.createElement("td");
+    memCell.className = "mono";
+    memCell.textContent = formatProjectStatsMem(entry);
+
+    const netCell = document.createElement("td");
+    netCell.className = "mono";
+    netCell.textContent = entry.net_io || "n/a";
+
+    const blockCell = document.createElement("td");
+    blockCell.className = "mono";
+    blockCell.textContent = entry.block_io || "n/a";
+
+    const pidsCell = document.createElement("td");
+    pidsCell.textContent = entry.pids === null || entry.pids === undefined ? "n/a" : entry.pids;
+
+    const uptimeCell = document.createElement("td");
+    uptimeCell.textContent = formatProjectStatsUptime(entry);
+
+    const restartsCell = document.createElement("td");
+    restartsCell.textContent = entry.restarts === null || entry.restarts === undefined ? "n/a" : entry.restarts;
+
+    row.appendChild(serviceCell);
+    row.appendChild(cpuCell);
+    row.appendChild(memCell);
+    row.appendChild(netCell);
+    row.appendChild(blockCell);
+    row.appendChild(pidsCell);
+    row.appendChild(uptimeCell);
+    row.appendChild(restartsCell);
+    projectDetailsStatsBody.appendChild(row);
+  });
+}
+
+async function loadProjectDetailsStats(hostId, projectName) {
+  if (!projectDetailsStatsBody) {
+    return;
+  }
+  const requestKey = `${hostId}::${projectName}`;
+  projectDetailsState.key = requestKey;
+  try {
+    const data = await api.get(`/hosts/${hostId}/projects/${projectName}/stats`);
+    if (projectDetailsState.key !== requestKey) {
+      return;
+    }
+    renderProjectStats(data.stats || []);
+  } catch (err) {
+    if (projectDetailsState.key !== requestKey) {
+      return;
+    }
+    setProjectDetailsStatsMessage(`Error: ${err.message}`);
+  }
 }
 
 function closeProjectDetailsModal() {
   if (projectDetailsModal) {
     projectDetailsModal.classList.add("hidden");
   }
+  projectDetailsState.key = null;
+  setProjectDetailsPortsMessage("Loading...");
+  setProjectDetailsStatsMessage("Loading...");
 }
 
 function formatDuration(seconds) {

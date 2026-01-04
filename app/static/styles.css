@@ -1715,6 +1715,64 @@ body {
   word-break: break-word;
 }
 
+.details-section {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.details-section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.stats-table-wrap {
+  border: 1px solid rgba(243, 244, 246, 0.08);
+  border-radius: 12px;
+  overflow: auto;
+  max-height: 240px;
+  background: rgba(15, 23, 42, 0.6);
+}
+
+.stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.stats-table th,
+.stats-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(243, 244, 246, 0.08);
+  text-align: left;
+}
+
+.stats-table th {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  background: rgba(15, 23, 42, 0.85);
+  position: sticky;
+  top: 0;
+}
+
+.stats-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.stats-table td.mono {
+  font-family: "Courier New", monospace;
+}
+
+.stats-table .empty td {
+  text-align: center;
+  color: var(--muted);
+}
+
 .create-run {
   display: flex;
   align-items: flex-end;

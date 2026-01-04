@@ -837,6 +837,61 @@ def _parse_ps_output(output: str) -> List[dict]:
     return items
 
 
+
+def _parse_stats_output(output: str) -> List[dict]:
+    text = output.strip()
+    if not text:
+        return []
+    items = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            items.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return items
+
+
+def _parse_docker_timestamp(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    if "." in raw:
+        base, rest = raw.split(".", 1)
+        tz_part = ""
+        frac = rest
+        for sign in ("+", "-"):
+            idx = rest.rfind(sign)
+            if idx > 0:
+                frac = rest[:idx]
+                tz_part = rest[idx:]
+                break
+        frac = (frac[:6]).ljust(6, "0")
+        raw = f"{base}.{frac}{tz_part}"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _parse_int(value: object) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 def _detect_updates(output: str) -> bool:
     lowered = output.lower()
     if not lowered.strip():
@@ -890,6 +945,144 @@ def project_status(host: HostConfig, project: str) -> Tuple[str, List[dict], Lis
         overall = "degraded"
 
     return overall, containers, issues
+
+
+
+def project_stats(host: HostConfig, project: str) -> List[dict]:
+    result = _run_compose(host, project, ["ps", "--all", "--format", "json"])
+    items = _parse_ps_output(result.stdout)
+    if not items:
+        return []
+    entries = []
+    names = []
+    for item in items:
+        name = item.get("Name") or item.get("Service") or "unknown"
+        service = item.get("Service") or name
+        container_id = item.get("ID")
+        names.append(name)
+        entries.append({"name": name, "service": service, "id": container_id})
+
+    stats_map: Dict[str, dict] = {}
+    if names:
+        stats_cmd = "docker stats --no-stream --format '{{json .}}'"
+        stats_result = run_ssh_command(host, stats_cmd, timeout=60)
+        if stats_result.exit_code == 0:
+            target_names = set(names)
+            for entry in _parse_stats_output(stats_result.stdout):
+                name = entry.get("Name")
+                if name and name in target_names:
+                    stats_map[name] = entry
+        else:
+            logger.debug(
+                "Docker stats failed host=%s project=%s error=%s",
+                host.host,
+                project,
+                stats_result.stderr or stats_result.stdout,
+            )
+
+    inspect_map: Dict[str, dict] = {}
+    if names:
+        inspect_cmd = "docker inspect --format '{{json .}}' " + " ".join(
+            shlex.quote(name) for name in names
+        )
+        inspect_result = run_ssh_command(host, inspect_cmd, timeout=60)
+        if inspect_result.exit_code == 0:
+            for entry in _parse_stats_output(inspect_result.stdout):
+                name = (entry.get("Name") or "").lstrip("/")
+                if name:
+                    inspect_map[name] = entry
+        else:
+            logger.debug(
+                "Docker inspect failed host=%s project=%s error=%s",
+                host.host,
+                project,
+                inspect_result.stderr or inspect_result.stdout,
+            )
+
+    now = datetime.now(timezone.utc)
+    results = []
+    for entry in entries:
+        name = entry["name"]
+        stats = stats_map.get(name, {})
+        inspect = inspect_map.get(name, {})
+        state = inspect.get("State") or {}
+        started_at = _parse_docker_timestamp(state.get("StartedAt"))
+        uptime_seconds = None
+        if started_at:
+            uptime_seconds = max(0, int((now - started_at).total_seconds()))
+        results.append(
+            {
+                "service": entry["service"],
+                "name": name,
+                "cpu_percent": stats.get("CPUPerc"),
+                "mem_usage": stats.get("MemUsage"),
+                "mem_percent": stats.get("MemPerc"),
+                "net_io": stats.get("NetIO"),
+                "block_io": stats.get("BlockIO"),
+                "pids": _parse_int(stats.get("PIDs")),
+                "uptime_seconds": uptime_seconds,
+                "restarts": _parse_int(inspect.get("RestartCount")),
+            }
+        )
+    return results
+
+
+
+def project_ports(host: HostConfig, project: str) -> List[dict]:
+    result = _run_compose(host, project, ["ps", "--all", "--format", "json"])
+    items = _parse_ps_output(result.stdout)
+    if not items:
+        return []
+    name_to_service: Dict[str, str] = {}
+    names: List[str] = []
+    for item in items:
+        name = item.get("Name") or item.get("Service") or "unknown"
+        service = item.get("Service") or name
+        name_to_service[name] = service
+        names.append(name)
+    if not names:
+        return []
+    inspect_cmd = "docker inspect --format '{{json .}}' " + " ".join(
+        shlex.quote(name) for name in names
+    )
+    inspect_result = run_ssh_command(host, inspect_cmd, timeout=60)
+    if inspect_result.exit_code != 0:
+        message = inspect_result.stderr or inspect_result.stdout or "Docker inspect failed"
+        raise ComposeError(message)
+    ports: List[dict] = []
+    for entry in _parse_stats_output(inspect_result.stdout):
+        name = (entry.get("Name") or "").lstrip("/")
+        service = name_to_service.get(name, name or "unknown")
+        settings = entry.get("NetworkSettings") or {}
+        port_map = settings.get("Ports") or {}
+        if not isinstance(port_map, dict):
+            continue
+        for key, bindings in port_map.items():
+            if not key:
+                continue
+            if "/" in key:
+                container_port, protocol = key.split("/", 1)
+            else:
+                container_port, protocol = key, None
+            if not bindings:
+                continue
+            for binding in bindings:
+                host_ip = None
+                host_port = None
+                if isinstance(binding, dict):
+                    host_ip = binding.get("HostIp")
+                    host_port = binding.get("HostPort")
+                ports.append(
+                    {
+                        "service": service,
+                        "name": name or service,
+                        "container_port": container_port,
+                        "protocol": protocol,
+                        "host_ip": host_ip,
+                        "host_port": host_port,
+                    }
+                )
+    return ports
 
 
 def _compose_config_json(host: HostConfig, project: str) -> dict:

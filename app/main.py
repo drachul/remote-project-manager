@@ -62,6 +62,10 @@ from .models import (
     OperationResponse,
     ProjectListResponse,
     ProjectStatusResponse,
+    ProjectStatEntry,
+    ProjectStatsResponse,
+    ProjectPortEntry,
+    ProjectPortsResponse,
     UpdateApplyResponse,
     UpdateCheckResponse,
     AuthTokenRequest,
@@ -3248,6 +3252,34 @@ def project_status(host_id: str, project: str) -> ProjectStatusResponse:
         overall_status=overall,
         containers=[ContainerStatus(**item) for item in containers],
         issues=issues,
+    )
+
+
+@app.get("/hosts/{host_id}/projects/{project}/stats", response_model=ProjectStatsResponse)
+def project_stats(host_id: str, project: str) -> ProjectStatsResponse:
+    host = _host(host_id)
+    try:
+        stats = compose.project_stats(host, project)
+    except Exception as exc:
+        _handle_errors(exc)
+    return ProjectStatsResponse(
+        host_id=host_id,
+        project=project,
+        stats=[ProjectStatEntry(**item) for item in stats],
+    )
+
+
+@app.get("/hosts/{host_id}/projects/{project}/ports", response_model=ProjectPortsResponse)
+def project_ports(host_id: str, project: str) -> ProjectPortsResponse:
+    host = _host(host_id)
+    try:
+        ports = compose.project_ports(host, project)
+    except Exception as exc:
+        _handle_errors(exc)
+    return ProjectPortsResponse(
+        host_id=host_id,
+        project=project,
+        ports=[ProjectPortEntry(**item) for item in ports],
     )
 
 
