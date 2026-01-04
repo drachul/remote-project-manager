@@ -255,3 +255,24 @@ def stream_ssh_command(
             channel.close()
         if "client" in locals():
             client.close()
+
+
+def open_ssh_shell(
+    host: HostConfig,
+    command: str,
+    timeout: int = 60,
+    cols: int = 80,
+    rows: int = 24,
+) -> Tuple[paramiko.SSHClient, paramiko.Channel]:
+    client = _connect(host, timeout)
+    try:
+        transport = client.get_transport()
+        if not transport:
+            raise SSHError("SSH transport unavailable")
+        channel = transport.open_session()
+        channel.get_pty(term="xterm-256color", width=cols, height=rows)
+        channel.exec_command(command)
+        return client, channel
+    except Exception:
+        client.close()
+        raise

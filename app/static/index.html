@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Remote Project Manager</title>
     <link rel="icon" type="image/png" href="/static/rpm-icon.png" />
+    <link rel="stylesheet" href="/static/vendor/xterm/xterm.css" />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -486,6 +487,25 @@
       </div>
     </div>
 
+    <div class="modal hidden" id="shellModal">
+      <div class="modal-backdrop"></div>
+      <div class="modal-card shell-modal-card">
+        <header class="modal-header">
+          <div>
+            <div class="modal-title">Service shell</div>
+            <div class="modal-subtitle" id="shellTarget"></div>
+          </div>
+          <button class="modal-close" id="closeShellModal" aria-label="Close">
+            <span class="material-symbols-outlined">close</span>
+          </button>
+        </header>
+        <div class="modal-body shell-body">
+          <div class="shell-status" id="shellStatus"></div>
+          <div class="shell-terminal" id="shellTerminal"></div>
+        </div>
+      </div>
+    </div>
+
     <div class="modal hidden" id="projectDetailsModal">
       <div class="modal-backdrop"></div>
       <div class="modal-card">
@@ -881,6 +901,8 @@
       </div>
     </div>
 
+    <script src="/static/vendor/xterm/xterm.min.js"></script>
+    <script src="/static/vendor/xterm/xterm-addon-fit.min.js"></script>
     <script src="/static/app.js"></script>
   </body>
 </html>

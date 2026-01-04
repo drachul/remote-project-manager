@@ -8,6 +8,7 @@ import logging
 import os
 import resource
 import secrets
+import shlex
 import sqlite3
 import string
 import stat
@@ -23,7 +24,7 @@ import pwd
 
 from croniter import croniter, CroniterBadCronError, CroniterBadDateError
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -79,7 +80,7 @@ from .models import (
     BackupScheduleSummaryEntry,
     BackupScheduleSummaryResponse,
 )
-from .ssh import SSHError, stream_ssh_command
+from .ssh import SSHError, open_ssh_shell, stream_ssh_command
 
 app = FastAPI(title="Remote Project Manager", version="0.1.0")
 
@@ -328,8 +329,7 @@ def _parse_db_datetime(value: Optional[str]) -> Optional[datetime]:
     return parsed
 
 
-def _verify_request_token(request: Request) -> None:
-    header = request.headers.get("authorization")
+def _extract_bearer_token(header: Optional[str]) -> str:
     if not header:
         raise HTTPException(status_code=401, detail="Authorization header missing.")
     if not header.lower().startswith("bearer "):
@@ -337,6 +337,10 @@ def _verify_request_token(request: Request) -> None:
     token = header.split(" ", 1)[1].strip()
     if not token:
         raise HTTPException(status_code=401, detail="Authorization token missing.")
+    return token
+
+
+def _verify_token_value(token: str) -> str:
     payload = _parse_token_payload(token)
     username = payload.get("username")
     token_id = payload.get("id")
@@ -359,6 +363,12 @@ def _verify_request_token(request: Request) -> None:
         ).fetchone()
         if not token_row:
             raise HTTPException(status_code=401, detail="Token not recognized.")
+    return username
+
+
+def _verify_request_token(request: Request) -> None:
+    token = _extract_bearer_token(request.headers.get("authorization"))
+    username = _verify_token_value(token)
     request.state.username = username
 
 
@@ -3281,6 +3291,111 @@ def project_ports(host_id: str, project: str) -> ProjectPortsResponse:
         project=project,
         ports=[ProjectPortEntry(**item) for item in ports],
     )
+
+
+@app.websocket("/ws/hosts/{host_id}/projects/{project}/services/{service}/shell")
+async def service_shell(
+    websocket: WebSocket, host_id: str, project: str, service: str
+) -> None:
+    header = websocket.headers.get("authorization")
+    token = None
+    if header:
+        try:
+            token = _extract_bearer_token(header)
+        except HTTPException:
+            token = None
+    if not token:
+        token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4401)
+        return
+    try:
+        username = _verify_token_value(token)
+    except HTTPException:
+        await websocket.close(code=4401)
+        return
+
+    await websocket.accept()
+    websocket.scope["username"] = username
+    host = _host(host_id)
+    try:
+        container = compose.service_container(host, project, service)
+    except Exception as exc:
+        await websocket.send_text(f"error: {exc}")
+        await websocket.close()
+        return
+
+    cols = int(websocket.query_params.get("cols", "80"))
+    rows = int(websocket.query_params.get("rows", "24"))
+    command = f"docker exec -it {shlex.quote(container)} /bin/sh"
+    stop_event = threading.Event()
+    loop = asyncio.get_running_loop()
+    client = None
+    channel = None
+    try:
+        client, channel = open_ssh_shell(host, command, timeout=60, cols=cols, rows=rows)
+    except Exception as exc:
+        await websocket.send_text(f"error: {exc}")
+        await websocket.close()
+        return
+
+    def reader() -> None:
+        try:
+            while not stop_event.is_set():
+                made_progress = False
+                if channel and channel.recv_ready():
+                    data = channel.recv(4096)
+                    if data:
+                        asyncio.run_coroutine_threadsafe(websocket.send_bytes(data), loop)
+                        made_progress = True
+                if channel and channel.recv_stderr_ready():
+                    data = channel.recv_stderr(4096)
+                    if data:
+                        asyncio.run_coroutine_threadsafe(websocket.send_bytes(data), loop)
+                        made_progress = True
+                if channel and channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                    break
+                if not made_progress:
+                    time.sleep(0.05)
+        except Exception as exc:
+            asyncio.run_coroutine_threadsafe(
+                websocket.send_text(f"error: {exc}"), loop
+            )
+        finally:
+            asyncio.run_coroutine_threadsafe(websocket.close(), loop)
+
+    thread = threading.Thread(target=reader, daemon=True)
+    thread.start()
+
+    try:
+        while True:
+            message = await websocket.receive_text()
+            if not message:
+                continue
+            try:
+                payload = json.loads(message)
+            except json.JSONDecodeError:
+                payload = {"type": "input", "data": message}
+            if payload.get("type") == "resize":
+                try:
+                    resize_cols = int(payload.get("cols", cols))
+                    resize_rows = int(payload.get("rows", rows))
+                    if channel:
+                        channel.resize_pty(width=resize_cols, height=resize_rows)
+                except (ValueError, TypeError):
+                    pass
+                continue
+            data = payload.get("data", "")
+            if data and channel:
+                channel.send(data)
+    except WebSocketDisconnect:
+        stop_event.set()
+    finally:
+        stop_event.set()
+        if channel:
+            channel.close()
+        if client:
+            client.close()
 
 
 @app.get("/hosts/{host_id}/projects/{project}/logs", response_model=LogsResponse)

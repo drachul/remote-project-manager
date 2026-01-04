@@ -49,6 +49,11 @@ const projectDetailsBackupSuccess = document.getElementById("projectDetailsBacku
 const projectDetailsStatus = document.getElementById("projectDetailsStatus");
 const projectDetailsStatsBody = document.getElementById("projectDetailsStatsBody");
 const projectDetailsPortsBody = document.getElementById("projectDetailsPortsBody");
+const shellModal = document.getElementById("shellModal");
+const closeShellModalBtn = document.getElementById("closeShellModal");
+const shellTarget = document.getElementById("shellTarget");
+const shellStatus = document.getElementById("shellStatus");
+const shellTerminal = document.getElementById("shellTerminal");
 const openBackupScheduleBtn = document.getElementById("openBackupSchedule");
 const backupScheduleModal = document.getElementById("backupScheduleModal");
 const closeBackupScheduleModalBtn = document.getElementById("closeBackupScheduleModal");
@@ -176,6 +181,15 @@ const logsState = {
   hostId: null,
   projectName: null,
   stream: null,
+};
+
+const shellState = {
+  hostId: null,
+  projectName: null,
+  serviceName: null,
+  socket: null,
+  term: null,
+  fitAddon: null,
 };
 
 const projectDetailsState = {
@@ -1530,6 +1544,161 @@ function closeLogsModal() {
   logsContent.textContent = "";
   stopLogFollow();
 }
+
+function setShellStatus(message, isError = false) {
+  if (!shellStatus) {
+    return;
+  }
+  shellStatus.textContent = message || "";
+  shellStatus.classList.toggle("error", isError);
+}
+
+function ensureShellTerminal() {
+  if (!shellTerminal) {
+    return false;
+  }
+  if (!window.Terminal || !window.FitAddon) {
+    setShellStatus("Terminal emulator unavailable.", true);
+    return false;
+  }
+  if (!shellState.term) {
+    shellState.term = new window.Terminal({
+      cursorBlink: true,
+      fontFamily: '"Courier New", monospace',
+      fontSize: 12,
+      theme: {
+        background: "#0a0f16",
+        foreground: "#e2e8f0",
+      },
+    });
+    shellState.fitAddon = new window.FitAddon.FitAddon();
+    shellState.term.loadAddon(shellState.fitAddon);
+    shellState.term.open(shellTerminal);
+    shellState.term.onData((data) => {
+      if (shellState.socket && shellState.socket.readyState === WebSocket.OPEN) {
+        shellState.socket.send(JSON.stringify({ type: "input", data }));
+      }
+    });
+  }
+  return true;
+}
+
+function sendShellResize() {
+  if (!shellState.socket || shellState.socket.readyState !== WebSocket.OPEN || !shellState.term) {
+    return;
+  }
+  if (shellState.fitAddon) {
+    shellState.fitAddon.fit();
+  }
+  shellState.socket.send(
+    JSON.stringify({ type: "resize", cols: shellState.term.cols, rows: shellState.term.rows })
+  );
+}
+
+function connectShell(hostId, projectName, serviceName) {
+  const authHeader = getAuthHeader();
+  if (!authHeader) {
+    setShellStatus("Sign in required.", true);
+    return;
+  }
+  const token = authHeader.split(" ")[1] || "";
+  if (!token) {
+    setShellStatus("Session token missing.", true);
+    return;
+  }
+  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+  let cols = 80;
+  let rows = 24;
+  if (shellState.term) {
+    if (shellState.fitAddon) {
+      shellState.fitAddon.fit();
+    }
+    cols = shellState.term.cols;
+    rows = shellState.term.rows;
+  }
+  const url = `${protocol}://${window.location.host}/ws/hosts/${encodeURIComponent(
+    hostId
+  )}/projects/${encodeURIComponent(projectName)}/services/${encodeURIComponent(
+    serviceName
+  )}/shell?token=${encodeURIComponent(token)}&cols=${cols}&rows=${rows}`;
+  if (shellState.socket) {
+    shellState.socket.close();
+  }
+  const socket = new WebSocket(url);
+  socket.binaryType = "arraybuffer";
+  shellState.socket = socket;
+  setShellStatus("Connecting...");
+
+  socket.onopen = () => {
+    setShellStatus("Connected");
+    if (shellState.term) {
+      shellState.term.focus();
+    }
+    sendShellResize();
+  };
+  socket.onmessage = (event) => {
+    if (!shellState.term) {
+      return;
+    }
+    if (event.data instanceof ArrayBuffer) {
+      const view = new Uint8Array(event.data);
+      shellState.term.write(new TextDecoder().decode(view));
+    } else {
+      shellState.term.write(event.data);
+    }
+  };
+  socket.onerror = () => {
+    setShellStatus("Shell connection error.", true);
+  };
+  socket.onclose = () => {
+    setShellStatus("Disconnected.");
+  };
+}
+
+function openShellModal(hostId, projectName, serviceName) {
+  if (!shellModal) {
+    return;
+  }
+  shellModal.classList.remove("hidden");
+  if (shellTarget) {
+    shellTarget.textContent = `${hostId} / ${projectName} / ${serviceName}`;
+  }
+  shellState.hostId = hostId;
+  shellState.projectName = projectName;
+  shellState.serviceName = serviceName;
+  if (!ensureShellTerminal()) {
+    return;
+  }
+  if (shellState.term) {
+    shellState.term.reset();
+  }
+  connectShell(hostId, projectName, serviceName);
+  sendShellResize();
+}
+
+function closeShellModal() {
+  if (shellModal) {
+    shellModal.classList.add("hidden");
+  }
+  if (shellState.socket) {
+    shellState.socket.close();
+    shellState.socket = null;
+  }
+  shellState.hostId = null;
+  shellState.projectName = null;
+  shellState.serviceName = null;
+  setShellStatus("");
+  if (shellState.term) {
+    shellState.term.reset();
+  }
+}
+function handleShellResize() {
+  if (!shellModal || shellModal.classList.contains("hidden")) {
+    return;
+  }
+  sendShellResize();
+}
+
 
 function openProjectDetailsModal(entry) {
   if (!projectDetailsModal) {
@@ -3634,6 +3803,18 @@ function renderProjectList() {
         stopBtn.classList.toggle("hidden", !showStop);
         restartBtn.classList.toggle("hidden", !showRestart);
 
+        const shellBtn = document.createElement("button");
+        shellBtn.className = "btn ghost service-action";
+        shellBtn.setAttribute("aria-label", "Service shell");
+        shellBtn.title = "Open shell";
+        const shellIcon = document.createElement("span");
+        shellIcon.className = "material-symbols-outlined action-icon";
+        shellIcon.textContent = "terminal";
+        shellBtn.appendChild(shellIcon);
+        shellBtn.addEventListener("click", () =>
+          openShellModal(entry.hostId, entry.projectName, serviceName)
+        );
+
         const logsBtn = document.createElement("button");
         logsBtn.className = "btn ghost service-action";
         logsBtn.setAttribute("aria-label", "Service logs");
@@ -3649,6 +3830,9 @@ function renderProjectList() {
         actions.appendChild(startBtn);
         actions.appendChild(stopBtn);
         actions.appendChild(restartBtn);
+        if (serviceRunning) {
+          actions.appendChild(shellBtn);
+        }
         actions.appendChild(logsBtn);
 
         item.appendChild(details);
@@ -4600,6 +4784,9 @@ document.addEventListener("keydown", (event) => {
   if (projectDetailsModal && !projectDetailsModal.classList.contains("hidden")) {
     closeProjectDetailsModal();
   }
+  if (shellModal && !shellModal.classList.contains("hidden")) {
+    closeShellModal();
+  }
   if (backupScheduleModal && !backupScheduleModal.classList.contains("hidden")) {
     closeBackupScheduleModal();
   }
@@ -4621,6 +4808,14 @@ closeLogsModalBtn.addEventListener("click", closeLogsModal);
 logsModal
   .querySelector(".modal-backdrop")
   .addEventListener("click", closeLogsModal);
+if (closeShellModalBtn) {
+  closeShellModalBtn.addEventListener("click", closeShellModal);
+}
+if (shellModal) {
+  shellModal
+    .querySelector(".modal-backdrop")
+    .addEventListener("click", closeShellModal);
+}
 if (closeProjectDetailsModalBtn) {
   closeProjectDetailsModalBtn.addEventListener("click", closeProjectDetailsModal);
 }
@@ -4863,5 +5058,7 @@ document.querySelectorAll(".bulk-action").forEach((button) => {
     }
   });
 });
+
+window.addEventListener("resize", handleShellResize);
 
 init();

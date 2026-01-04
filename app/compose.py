@@ -905,6 +905,31 @@ def _detect_updates(output: str) -> bool:
     return False
 
 
+
+
+def service_container(host: HostConfig, project: str, service: str) -> str:
+    result = _run_compose(host, project, ["ps", "--all", "--format", "json"])
+    items = _parse_ps_output(result.stdout)
+    if not items:
+        raise ComposeError("No containers found")
+    service_key = service.lower()
+    matches = [
+        item for item in items
+        if (item.get("Service") or "").lower() == service_key
+    ]
+    if not matches:
+        raise ComposeError(f"Service not found: {service}")
+
+    def is_running(item: dict) -> bool:
+        state = (item.get("State") or "").lower()
+        status = (item.get("Status") or "").lower()
+        return state == "running" or status.startswith("up")
+
+    selected = next((item for item in matches if is_running(item)), matches[0])
+    name = selected.get("Name") or selected.get("Service")
+    if not name:
+        raise ComposeError("Service container name unavailable")
+    return name
 def project_status(host: HostConfig, project: str) -> Tuple[str, List[dict], List[str]]:
     result = _run_compose(host, project, ["ps", "--all", "--format", "json"])
     if not result.stdout.strip():
