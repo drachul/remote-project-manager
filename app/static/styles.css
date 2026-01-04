@@ -110,6 +110,7 @@ body {
   gap: 12px;
   align-items: center;
   flex-wrap: wrap;
+  margin-left: auto;
 }
 
 .interval-control {
@@ -133,7 +134,7 @@ body {
   color: var(--text);
   border: 1px solid rgba(243, 244, 246, 0.12);
   border-radius: 999px;
-  padding: 6px 10px;
+  padding: 8px 10px;
   font-size: 12px;
   outline: none;
 }
@@ -191,6 +192,7 @@ body {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  margin-left: auto;
 }
 
 .host-panel-actions {
@@ -397,6 +399,11 @@ body {
   box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.15);
 }
 
+.project-table .list-row.action-running td {
+  background: rgba(59, 130, 246, 0.07);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.5), 0 0 12px rgba(59, 130, 246, 0.2);
+}
+
 .project-table .list-row.empty td {
   text-align: center;
   color: var(--muted);
@@ -437,11 +444,11 @@ body {
 }
 
 .project-cell.project-status .status-icon {
-  font-size: 24px;
+  font-size: 32px;
 }
 
 .project-cell.project-updates .updates-icon {
-  font-size: 24px;
+  font-size: 32px;
 }
 
 .action-menu {
@@ -763,6 +770,12 @@ body {
   border-radius: 10px;
   background: rgba(243, 244, 246, 0.04);
   border: 1px solid rgba(243, 244, 246, 0.06);
+}
+
+.service-item.action-running {
+  border-color: rgba(59, 130, 246, 0.7);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.5), 0 0 10px rgba(59, 130, 246, 0.2);
+  background: rgba(59, 130, 246, 0.12);
 }
 
 .service-name {
@@ -1860,7 +1873,7 @@ body {
   border: none;
   cursor: pointer;
   border-radius: 999px;
-  padding: 6px 10px;
+  padding: 8px 10px;
   font-weight: 600;
   font-size: 10px;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
@@ -1877,6 +1890,27 @@ body {
 
 .btn.in-progress .action-icon {
   color: #f87171;
+}
+
+.btn.in-progress {
+  position: relative;
+}
+
+.btn.in-progress::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 999px;
+  border: 2px solid rgba(59, 130, 246, 0.35);
+  border-top-color: rgba(59, 130, 246, 0.95);
+  animation: actionSpin 0.9s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes actionSpin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .host-action.in-progress .action-icon {

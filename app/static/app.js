@@ -1449,9 +1449,13 @@ function setActionRunning(button, running) {
   if (running) {
     button.classList.add("in-progress");
     button.dataset.actionRunning = "true";
+    button.disabled = true;
   } else {
     button.classList.remove("in-progress");
     button.dataset.actionRunning = "";
+    if (button.dataset.forceDisabled !== "true") {
+      button.disabled = false;
+    }
   }
 }
 
@@ -3409,6 +3413,60 @@ function setServiceActionProgress(key, action, running) {
   }
 }
 
+function hasServiceActionRunning(hostId, projectName) {
+  const prefix = `${hostId}::${projectName}::`;
+  for (const [key, actions] of state.serviceActionProgress.entries()) {
+    if (actions.size && key.startsWith(prefix)) {
+      return true;
+    }
+  }
+  return false;
+}
+function deriveOverallStatus(statuses) {
+  const normalized = statuses.filter((status) => status);
+  if (!normalized.length) {
+    return "unknown";
+  }
+  if (normalized.every((status) => status === "up")) {
+    return "up";
+  }
+  if (normalized.every((status) => status === "down" || status === "unknown")) {
+    return normalized.includes("down") ? "down" : "unknown";
+  }
+  if (normalized.includes("degraded")) {
+    return "degraded";
+  }
+  return "degraded";
+}
+
+function updateLocalServiceStatus(hostId, projectName, serviceName, status) {
+  if (!state.stateSnapshot?.hosts) {
+    return;
+  }
+  const host = state.stateSnapshot.hosts.find((item) => item.host_id === hostId);
+  if (!host) {
+    return;
+  }
+  const project = host.projects?.find((item) => item.project === projectName);
+  if (!project) {
+    return;
+  }
+  const services = Array.isArray(project.services) ? project.services : [];
+  let service = services.find((item) => item.id === serviceName);
+  if (!service) {
+    service = { id: serviceName };
+    services.push(service);
+    project.services = services;
+  }
+  const now = new Date().toISOString();
+  service.status = status;
+  service.refreshed_at = now;
+  const statuses = services.map((item) => item.status);
+  project.overall_status = deriveOverallStatus(statuses);
+  project.refreshed_at = now;
+}
+
+
 function renderHostList() {
   hostList.innerHTML = "";
   if (!state.hosts.length) {
@@ -3633,6 +3691,7 @@ function renderProjectList() {
     }
 
     const actionStates = getActionProgress(entry.key);
+    let serviceActionActive = false;
     const projectRunning = statusInfo.className === "up" || statusInfo.className === "degraded";
     const startRunning = actionStates.has("start");
     const stopRunning = actionStates.has("stop");
@@ -3674,8 +3733,12 @@ function renderProjectList() {
     }
     if (backupBtn) {
       backupBtn.classList.add("action-ready");
+      const forceDisabled = !state.backupTargetsAvailable;
+      backupBtn.dataset.forceDisabled = forceDisabled ? "true" : "";
+      if (forceDisabled) {
+        backupBtn.disabled = true;
+      }
       setActionRunning(backupBtn, backupRunning);
-      backupBtn.disabled = !state.backupTargetsAvailable;
       backupBtn.classList.remove("hidden");
     }
     if (refreshBtn) {
@@ -3754,6 +3817,12 @@ function renderProjectList() {
 
         const actionStateKey = serviceActionKey(entry.hostId, entry.projectName, serviceName);
         const serviceActions = getServiceActionProgress(actionStateKey);
+        if (serviceActions.size) {
+          serviceActionActive = true;
+          item.classList.add("action-running");
+        } else {
+          item.classList.remove("action-running");
+        }
         const serviceRunning = info.className === "up" || info.className === "degraded";
         const startRunning = serviceActions.has("start");
         const stopRunning = serviceActions.has("stop");
@@ -3842,6 +3911,11 @@ function renderProjectList() {
       });
     }
 
+    row.classList.toggle(
+      "action-running",
+      actionStates.size > 0 || serviceActionActive
+    );
+
     servicesSummary.addEventListener("click", () => {
       const isHidden = servicesPanel.classList.toggle("hidden");
       servicesSummary.classList.toggle("open", !isHidden);
@@ -3854,7 +3928,6 @@ function renderProjectList() {
       }
       actionBtn.addEventListener("click", (event) => {
         event.stopPropagation();
-        closeAllActionMenus();
         runProjectAction(actionBtn, entry.hostId, entry.projectName, action);
       });
     });
@@ -4168,6 +4241,7 @@ function clearProjectFilters() {
 
 
 async function runProjectAction(button, hostId, projectName, action) {
+  const row = button.closest(".project-row");
   const label = action.charAt(0).toUpperCase() + action.slice(1);
   const originalLabel = button.dataset.originalLabel || getActionLabel(button) || label;
   button.dataset.originalLabel = originalLabel;
@@ -4196,13 +4270,18 @@ async function runProjectAction(button, hostId, projectName, action) {
     } catch (err) {
       alert(`Stop failed: ${err.message}`);
     } finally {
-      button.disabled = false;
+      if (button.dataset.forceDisabled !== "true") {
+        button.disabled = false;
+      }
     }
     return;
   }
 
   setActionRunning(button, true);
   setActionProgress(projectKey, action, true);
+  if (row) {
+    row.classList.add("action-running");
+  }
   let backupRow = null;
   let shouldRefresh = false;
   let completionMessage = "";
@@ -4279,24 +4358,32 @@ async function runProjectAction(button, hostId, projectName, action) {
       setActionLabel(button, originalLabel);
     }
     setActionProgress(projectKey, action, false);
+    if (row) {
+      row.classList.toggle(
+        "action-running",
+        getActionProgress(projectKey).size > 0 || hasServiceActionRunning(hostId, projectName)
+      );
+    }
     setActionRunning(button, false);
-    button.disabled = false;
     if (!isBackup) {
       setActionLabel(button, originalLabel);
     }
     if (shouldRefresh) {
-      if (action === "update") {
-        await loadState();
-      } else if (action === "refresh") {
-        await loadState();
-      } else {
-        await refreshHosts([hostId]);
+      if (action !== "refresh") {
+        try {
+          await api.post(`/hosts/${hostId}/projects/${projectName}/state/refresh`);
+        } catch (err) {
+          console.error("Project refresh failed", err);
+        }
       }
+      await loadState();
     }
   }
 }
 
 async function runServiceAction(button, hostId, projectName, serviceName, action) {
+  const serviceItem = button.closest(".service-item");
+  const row = button.closest(".project-row");
   const isRunning = button.dataset.actionRunning === "true";
   const serviceKeyValue = serviceActionKey(hostId, projectName, serviceName);
   const encodedService = encodeURIComponent(serviceName);
@@ -4310,28 +4397,52 @@ async function runServiceAction(button, hostId, projectName, serviceName, action
     } catch (err) {
       alert(`Stop failed: ${err.message}`);
     } finally {
-      button.disabled = false;
+      if (button.dataset.forceDisabled !== "true") {
+        button.disabled = false;
+      }
     }
     return;
   }
 
   setActionRunning(button, true);
   setServiceActionProgress(serviceKeyValue, action, true);
+  if (serviceItem) {
+    serviceItem.classList.add("action-running");
+  }
+  if (row) {
+    row.classList.add("action-running");
+  }
   let shouldRefresh = false;
   let completionMessage = "";
   try {
     const result = await runServiceActionStream(hostId, projectName, serviceName, action);
     completionMessage = result?.message || "Action complete";
     shouldRefresh = true;
+    const updatedStatus = action === "stop" ? "down" : "up";
+    updateLocalServiceStatus(hostId, projectName, serviceName, updatedStatus);
+    renderProjectList();
     showToast(`${serviceName}: ${completionMessage}`);
   } catch (err) {
     alert(`Service action failed: ${err.message}`);
   } finally {
     setServiceActionProgress(serviceKeyValue, action, false);
+    if (serviceItem) {
+      serviceItem.classList.remove("action-running");
+    }
+    if (row) {
+      row.classList.toggle(
+        "action-running",
+        getActionProgress(`${hostId}::${projectName}`).size > 0 || hasServiceActionRunning(hostId, projectName)
+      );
+    }
     setActionRunning(button, false);
-    button.disabled = false;
     if (shouldRefresh) {
-      await refreshHosts([hostId]);
+      try {
+        await api.post(`/hosts/${hostId}/projects/${projectName}/state/refresh`);
+      } catch (err) {
+        console.error("Project refresh failed", err);
+      }
+      await loadState();
     }
   }
 }
@@ -4374,10 +4485,12 @@ function updateBulkBackupAvailability() {
     return;
   }
   const backupBtn = bulkActions.querySelector(
-    ".bulk-action[data-bulk-action=\"backup\"]"
+    '.bulk-action[data-bulk-action="backup"]'
   );
   if (backupBtn) {
-    backupBtn.disabled = !state.backupTargetsAvailable;
+    const disabled = !state.backupTargetsAvailable;
+    backupBtn.disabled = disabled;
+    backupBtn.dataset.forceDisabled = disabled ? "true" : "";
   }
 }
 
@@ -4576,7 +4689,6 @@ async function runHostAction(button, hostId, action) {
   } finally {
     setHostActionProgress(hostId, action, false);
     setActionRunning(button, false);
-    button.disabled = false;
   }
   if (success) {
     showToast(`${hostId}: ${response?.output || `${label} complete`}`);
