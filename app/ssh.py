@@ -205,6 +205,7 @@ def stream_ssh_command(
     stop_event,
     timeout: int = 60,
     chunk_size: int = 4096,
+    include_exit: bool = False,
 ) -> Iterator[Tuple[str, str]]:
     try:
         logger.debug("SSH stream %s: %s", _format_target(host), _redact_command(command))
@@ -248,6 +249,14 @@ def stream_ssh_command(
             yield ("stdout", stdout_buffer.decode("utf-8", errors="replace"))
         if stderr_buffer:
             yield ("stderr", stderr_buffer.decode("utf-8", errors="replace"))
+        if include_exit and not stop_event.is_set():
+            if channel.exit_status_ready():
+                try:
+                    exit_code = channel.recv_exit_status()
+                except Exception:
+                    exit_code = None
+                if exit_code is not None:
+                    yield ("exit", str(exit_code))
     except Exception as exc:
         raise SSHError(f"SSH stream failed: {exc}") from exc
     finally:

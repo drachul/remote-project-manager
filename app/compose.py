@@ -552,6 +552,39 @@ def _run_compose_cancelable(
     return result
 
 
+def _parse_compose_command(command: str) -> List[str]:
+    if not command or not command.strip():
+        raise ComposeError("Command is required")
+    args = shlex.split(command)
+    if not args:
+        raise ComposeError("Command is required")
+    if args[0] == "docker":
+        if len(args) < 2 or args[1] != "compose":
+            raise ComposeError("Command must be a docker compose command")
+        args = args[2:]
+    elif args[0] == "docker-compose":
+        args = args[1:]
+    elif args[0] == "compose":
+        args = args[1:]
+    if not args:
+        raise ComposeError("Compose arguments are required")
+    return args
+
+
+def run_compose_command(
+    host: HostConfig, project: str, command: str, timeout: int = 300
+) -> SSHResult:
+    command_str = compose_command_string(host, project, command)
+    return run_ssh_command(host, command_str, timeout=timeout)
+
+
+def compose_command_string(host: HostConfig, project: str, command: str) -> str:
+    args = _parse_compose_command(command)
+    return _compose_command(_project_dir(host, project), args)
+
+
+
+
 def list_projects(host: HostConfig) -> List[str]:
     root_q = shlex.quote(host.project_root)
     command = (

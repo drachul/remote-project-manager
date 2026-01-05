@@ -288,6 +288,9 @@
                 <button class="btn ghost compose" aria-label="Compose file" title="Edit compose file">
                   <span class="material-symbols-outlined action-icon">edit_document</span>
                 </button>
+                <button class="btn ghost compose-command" aria-label="Compose command" title="Run compose command">
+                  <span class="material-symbols-outlined action-icon">terminal</span>
+                </button>
                 <button class="btn ghost project-delete" title="Delete project" aria-label="Delete project">
                   <span class="material-symbols-outlined action-icon delete-icon">delete</span>
                 </button>
@@ -448,6 +451,33 @@
         </div>
       </div>
     </div>
+
+    <div class="modal hidden" id="commandModal">
+      <div class="modal-backdrop"></div>
+      <div class="modal-card">
+        <header class="modal-header">
+          <div>
+            <div class="modal-title">Compose command</div>
+            <div class="modal-subtitle" id="commandTarget"></div>
+          </div>
+          <button class="modal-close" id="closeCommandModal" aria-label="Close">
+            <span class="material-symbols-outlined">close</span>
+          </button>
+        </header>
+        <div class="modal-body command-body">
+          <label class="control">
+            Command
+            <input id="commandInput" type="text" placeholder="ps -a" />
+          </label>
+          <div class="command-actions">
+            <button class="btn subtle" id="runCommand">Run</button>
+          </div>
+          <div class="command-status" id="commandStatus"></div>
+          <pre class="command-output" id="commandOutput"></pre>
+        </div>
+      </div>
+    </div>
+
 
     <div class="modal hidden" id="logsModal">
       <div class="modal-backdrop"></div>

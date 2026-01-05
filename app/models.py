@@ -175,6 +175,19 @@ class ComposeValidateResponse(BaseModel):
     output: str
 
 
+class ComposeCommandRequest(BaseModel):
+    command: str
+
+
+class ComposeCommandResponse(BaseModel):
+    host_id: str
+    project: str
+    command: str
+    exit_code: int
+    stdout: str = ""
+    stderr: str = ""
+
+
 class ProjectCreateRequest(BaseModel):
     project: str
     content: str

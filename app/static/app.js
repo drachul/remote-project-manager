@@ -24,6 +24,13 @@ const composePath = document.getElementById("composePath");
 const composeEditor = document.getElementById("composeEditor");
 const composeStatus = document.getElementById("composeStatus");
 const composeLint = document.getElementById("composeLint");
+const commandModal = document.getElementById("commandModal");
+const closeCommandModalBtn = document.getElementById("closeCommandModal");
+const commandTarget = document.getElementById("commandTarget");
+const commandInput = document.getElementById("commandInput");
+const commandStatus = document.getElementById("commandStatus");
+const commandOutput = document.getElementById("commandOutput");
+const runCommandBtn = document.getElementById("runCommand");
 const previewComposeBtn = document.getElementById("previewCompose");
 const confirmComposeBtn = document.getElementById("confirmCompose");
 const closeComposeModalBtn = document.getElementById("closeComposeModal");
@@ -173,6 +180,11 @@ const state = {
 };
 
 const composeState = {
+  hostId: null,
+  projectName: null,
+};
+
+const commandState = {
   hostId: null,
   projectName: null,
 };
@@ -1488,6 +1500,239 @@ function escapeHtml(value) {
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
+const ANSI_COLORS = {
+  30: "#0b0f14",
+  31: "#f87171",
+  32: "#4ade80",
+  33: "#facc15",
+  34: "#60a5fa",
+  35: "#c084fc",
+  36: "#22d3ee",
+  37: "#e5e7eb",
+  90: "#64748b",
+  91: "#fca5a5",
+  92: "#86efac",
+  93: "#fde047",
+  94: "#93c5fd",
+  95: "#e9d5ff",
+  96: "#67e8f9",
+  97: "#f8fafc",
+};
+
+const ANSI_BG_COLORS = {
+  40: "#0b0f14",
+  41: "#b91c1c",
+  42: "#166534",
+  43: "#854d0e",
+  44: "#1e3a8a",
+  45: "#6b21a8",
+  46: "#155e75",
+  47: "#e5e7eb",
+  100: "#1f2937",
+  101: "#ef4444",
+  102: "#22c55e",
+  103: "#eab308",
+  104: "#3b82f6",
+  105: "#a855f7",
+  106: "#06b6d4",
+  107: "#f8fafc",
+};
+
+function ansiToHtml(input) {
+  if (!input) {
+    return "";
+  }
+  let normalized = input.replace(/\r/g, "");
+  normalized = normalized.replace(/\\033/g, "\x1b");
+  normalized = normalized.replace(/\\e/gi, "\x1b");
+  normalized = normalized.replace(/\\x1b/gi, "\x1b");
+  normalized = normalized.replace(/\\u001b/gi, "\x1b");
+  let output = "";
+  let index = 0;
+  const state = { fg: null, bg: null, bold: false, italic: false, underline: false };
+  let open = false;
+
+  const buildStyle = () => {
+    const styles = [];
+    if (state.fg) {
+      styles.push(`color:${state.fg}`);
+    }
+    if (state.bg) {
+      styles.push(`background-color:${state.bg}`);
+    }
+    if (state.bold) {
+      styles.push("font-weight:700");
+    }
+    if (state.italic) {
+      styles.push("font-style:italic");
+    }
+    if (state.underline) {
+      styles.push("text-decoration:underline");
+    }
+    return styles.join(";");
+  };
+
+  const closeSpan = () => {
+    if (open) {
+      output += "</span>";
+      open = false;
+    }
+  };
+
+  const openSpan = () => {
+    const style = buildStyle();
+    if (style) {
+      output += `<span style="${style}">`;
+      open = true;
+    }
+  };
+
+  const applyCodes = (codes) => {
+    for (let i = 0; i < codes.length; i += 1) {
+      const code = codes[i];
+      if (code === 0) {
+        state.fg = null;
+        state.bg = null;
+        state.bold = false;
+        state.italic = false;
+        state.underline = false;
+        continue;
+      }
+      if (code === 1) {
+        state.bold = true;
+        continue;
+      }
+      if (code === 3) {
+        state.italic = true;
+        continue;
+      }
+      if (code === 4) {
+        state.underline = true;
+        continue;
+      }
+      if (code === 22) {
+        state.bold = false;
+        continue;
+      }
+      if (code === 23) {
+        state.italic = false;
+        continue;
+      }
+      if (code === 24) {
+        state.underline = false;
+        continue;
+      }
+      if (code === 39) {
+        state.fg = null;
+        continue;
+      }
+      if (code === 49) {
+        state.bg = null;
+        continue;
+      }
+      if (code === 38 || code === 48) {
+        const isFg = code === 38;
+        const mode = codes[i + 1];
+        if (mode === 2 && codes.length >= i + 4) {
+          const r = codes[i + 2];
+          const g = codes[i + 3];
+          const b = codes[i + 4];
+          const color = `rgb(${r}, ${g}, ${b})`;
+          if (isFg) {
+            state.fg = color;
+          } else {
+            state.bg = color;
+          }
+          i += 4;
+          continue;
+        }
+        if (mode === 5 && codes.length >= i + 2) {
+          i += 2;
+          continue;
+        }
+        continue;
+      }
+      if (ANSI_COLORS[code]) {
+        state.fg = ANSI_COLORS[code];
+        continue;
+      }
+      if (ANSI_BG_COLORS[code]) {
+        state.bg = ANSI_BG_COLORS[code];
+        continue;
+      }
+    }
+  };
+
+  while (index < normalized.length) {
+    const escIndex = normalized.indexOf("\u001b", index);
+    if (escIndex === -1) {
+      output += escapeHtml(normalized.slice(index));
+      break;
+    }
+    output += escapeHtml(normalized.slice(index, escIndex));
+    const nextChar = normalized[escIndex + 1];
+    if (nextChar === "[") {
+      const rest = normalized.slice(escIndex);
+      const match = rest.match(/^\u001b\[[0-9;?]*[A-Za-z]/);
+      if (match) {
+        const seq = match[0];
+        const finalChar = seq[seq.length - 1];
+        if (finalChar.toLowerCase() === "m") {
+          const body = seq.slice(2, -1);
+          const parts = body.split(";").filter((part) => part.length);
+          const codes = parts.length ? parts.map((part) => parseInt(part, 10)) : [0];
+          closeSpan();
+          applyCodes(codes);
+          openSpan();
+        }
+        index = escIndex + seq.length;
+        continue;
+      }
+    }
+    if (nextChar === "]") {
+      const rest = normalized.slice(escIndex + 2);
+      let end = rest.indexOf("\u0007");
+      let advance = 1;
+      if (end === -1) {
+        const escEnd = rest.indexOf("\u001b\\");
+        if (escEnd !== -1) {
+          end = escEnd;
+          advance = 2;
+        }
+      }
+      if (end !== -1) {
+        index = escIndex + 2 + end + advance;
+        continue;
+      }
+    }
+    index = escIndex + (nextChar ? 2 : 1);
+  }
+
+  closeSpan();
+  return output;
+}
+
+function applyCommandChunk(chunk, outputParts) {
+  if (!chunk) {
+    return;
+  }
+  const reset = /\u001b\[(?:\d+;?)*[Hf]/.test(chunk) || /\u001b\[2J/.test(chunk) || /\u001b\[J/.test(chunk);
+  if (reset) {
+    outputParts.length = 0;
+  }
+  const cleaned = chunk.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, (seq) => (seq.endsWith("m") ? seq : ""));
+  const parts = cleaned.split("\r");
+  if (parts.length > 1) {
+    const last = parts[parts.length - 1];
+    if (outputParts.length) {
+      outputParts[outputParts.length - 1] = last;
+    } else {
+      outputParts.push(last);
+    }
+    return;
+  }
+  outputParts.push(cleaned);
+}
 
 function openComposeModal(hostId, projectName) {
   composeState.hostId = hostId;
@@ -1525,6 +1770,64 @@ function closeComposeModal() {
   composeLint.classList.add("hidden");
   composeLint.textContent = "";
 }
+function openCommandModal(hostId, projectName) {
+  if (!commandModal) {
+    return;
+  }
+  commandState.hostId = hostId;
+  commandState.projectName = projectName;
+  commandModal.classList.remove("hidden");
+  if (commandTarget) {
+    commandTarget.textContent = `${hostId} / ${projectName}`;
+  }
+  if (commandInput) {
+    commandInput.value = "";
+    commandInput.focus();
+  }
+  if (commandStatus) {
+    commandStatus.textContent = "Enter docker compose arguments (e.g. ps -a).";
+    commandStatus.classList.remove("error", "success");
+  }
+  if (commandOutput) {
+    commandOutput.textContent = "";
+  }
+  setCommandRunning(false);
+}
+
+function setCommandRunning(running) {
+  if (!runCommandBtn) {
+    return;
+  }
+  runCommandBtn.dataset.running = running ? "true" : "";
+  runCommandBtn.textContent = running ? "Stop" : "Run";
+  runCommandBtn.classList.toggle("subtle", !running);
+  runCommandBtn.classList.toggle("ghost", running);
+}
+
+function closeCommandModal() {
+  if (!commandModal) {
+    return;
+  }
+  commandModal.classList.add("hidden");
+  if (commandState.stream) {
+    commandState.stream.close();
+    commandState.stream = null;
+  }
+  setCommandRunning(false);
+  if (runCommandBtn) {
+    runCommandBtn.disabled = false;
+  }
+  commandState.hostId = null;
+  commandState.projectName = null;
+  if (commandStatus) {
+    commandStatus.textContent = "";
+    commandStatus.classList.remove("error", "success");
+  }
+  if (commandOutput) {
+    commandOutput.textContent = "";
+  }
+}
+
 
 function openLogsModal(hostId, projectName, serviceName = "") {
   logsState.hostId = hostId;
@@ -3015,7 +3318,7 @@ function fetchLogs() {
       logsContent.innerHTML = "";
       const span = document.createElement("span");
       span.className = "log-line stdout";
-      span.textContent = data.logs || "No logs returned.";
+      span.innerHTML = ansiToHtml(data.logs || "No logs returned.");
       logsContent.appendChild(span);
       updateLogsFilter();
       logsContent.scrollTop = logsContent.scrollHeight;
@@ -3024,7 +3327,7 @@ function fetchLogs() {
       logsContent.innerHTML = "";
       const span = document.createElement("span");
       span.className = "log-line stderr";
-      span.textContent = `Error: ${err.message}`;
+      span.innerHTML = ansiToHtml(`Error: ${err.message}`);
       logsContent.appendChild(span);
       updateLogsFilter();
     });
@@ -3055,7 +3358,7 @@ function toggleLogFollow() {
   const appendLine = (line, streamName) => {
     const span = document.createElement("span");
     span.className = `log-line ${streamName}`;
-    span.textContent = `${line}\n`;
+    span.innerHTML = `${ansiToHtml(line)}\n`;
     logsContent.appendChild(span);
     logsContent.scrollTop = logsContent.scrollHeight;
   };
@@ -3071,7 +3374,7 @@ function toggleLogFollow() {
     onError: () => {
       const span = document.createElement("span");
       span.className = "log-line stderr";
-      span.textContent = "\n[log stream closed]\n";
+      span.innerHTML = ansiToHtml("\n[log stream closed]\n");
       logsContent.appendChild(span);
       stopLogFollow();
     },
@@ -3945,6 +4248,15 @@ function renderProjectList() {
       closeAllActionMenus();
       openComposeModal(entry.hostId, entry.projectName);
     });
+
+    const commandBtn = row.querySelector(".compose-command");
+    if (commandBtn) {
+      commandBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        closeAllActionMenus();
+        openCommandModal(entry.hostId, entry.projectName);
+      });
+    }
 
     projectList.appendChild(row);
   });
@@ -4880,9 +5192,130 @@ confirmComposeBtn.addEventListener("click", async () => {
 });
 
 closeComposeModalBtn.addEventListener("click", closeComposeModal);
+if (closeCommandModalBtn) {
+  closeCommandModalBtn.addEventListener("click", closeCommandModal);
+}
+
+if (commandInput) {
+  commandInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      runCommandBtn?.click();
+    }
+  });
+}
+
+if (runCommandBtn) {
+  runCommandBtn.addEventListener("click", async () => {
+    const isRunning = runCommandBtn.dataset.running === "true";
+    if (isRunning) {
+      if (commandState.stream) {
+        commandState.stream.close();
+        commandState.stream = null;
+      }
+      if (commandStatus) {
+        commandStatus.textContent = "Cancelled.";
+        commandStatus.classList.remove("success");
+        commandStatus.classList.add("error");
+      }
+      setCommandRunning(false);
+      return;
+    }
+    if (!commandState.hostId || !commandState.projectName) {
+      if (commandStatus) {
+        commandStatus.textContent = "No project selected.";
+        commandStatus.classList.add("error");
+      }
+      return;
+    }
+    const command = commandInput ? commandInput.value.trim() : "";
+    if (!command) {
+      if (commandStatus) {
+        commandStatus.textContent = "Enter a command to run.";
+        commandStatus.classList.add("error");
+      }
+      return;
+    }
+    if (commandState.stream) {
+      commandState.stream.close();
+      commandState.stream = null;
+    }
+    setCommandRunning(true);
+    if (commandStatus) {
+      commandStatus.textContent = "Running...";
+      commandStatus.classList.remove("error", "success");
+    }
+    if (commandOutput) {
+      commandOutput.textContent = "";
+    }
+    const outputParts = [];
+    const params = new URLSearchParams({ command });
+    const streamUrl = `/hosts/${commandState.hostId}/projects/${commandState.projectName}/compose/command/stream?${params.toString()}`;
+    const stream = createEventStream(streamUrl, {
+      onEvent: (eventName, data) => {
+        let payload = {};
+        try {
+          payload = JSON.parse(data);
+        } catch (err) {
+          payload = { line: data, message: data };
+        }
+        if (eventName === "stdout" || eventName === "stderr") {
+          const line = payload.line ?? data;
+          applyCommandChunk(line, outputParts);
+          if (commandOutput) {
+            commandOutput.innerHTML = ansiToHtml(outputParts.join("\n"));
+          }
+          return;
+        }
+        if (eventName === "complete") {
+          const exitCode = Number.isFinite(payload.exit_code) ? payload.exit_code : 0;
+          if (commandOutput && !outputParts.length) {
+            commandOutput.textContent = "(no output)";
+          }
+          if (commandStatus) {
+            commandStatus.textContent = `Exit code: ${exitCode}`;
+            commandStatus.classList.toggle("success", exitCode === 0);
+            commandStatus.classList.toggle("error", exitCode !== 0);
+          }
+          stream.close();
+          commandState.stream = null;
+          setCommandRunning(false);
+          return;
+        }
+        if (eventName === "error") {
+          if (commandStatus) {
+            commandStatus.textContent = `Error: ${payload.message || data}`;
+            commandStatus.classList.add("error");
+          }
+          stream.close();
+          commandState.stream = null;
+          setCommandRunning(false);
+        }
+      },
+      onError: (err) => {
+        if (commandStatus) {
+          commandStatus.textContent = `Error: ${err.message}`;
+          commandStatus.classList.add("error");
+        }
+        if (commandOutput) {
+          commandOutput.textContent = "";
+        }
+        commandState.stream = null;
+        setCommandRunning(false);
+      },
+    });
+    commandState.stream = stream;
+  });
+}
+
 composeModal
   .querySelector(".modal-backdrop")
   .addEventListener("click", closeComposeModal);
+if (commandModal) {
+  commandModal
+    .querySelector(".modal-backdrop")
+    .addEventListener("click", closeCommandModal);
+}
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") {
     return;
@@ -4892,6 +5325,9 @@ document.addEventListener("keydown", (event) => {
   }
   if (!logsModal.classList.contains("hidden")) {
     closeLogsModal();
+  }
+  if (commandModal && !commandModal.classList.contains("hidden")) {
+    closeCommandModal();
   }
   if (projectDetailsModal && !projectDetailsModal.classList.contains("hidden")) {
     closeProjectDetailsModal();

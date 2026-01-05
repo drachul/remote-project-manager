@@ -56,6 +56,8 @@ from .models import (
     ProjectCreateResponse,
     ComposeValidateRequest,
     ComposeValidateResponse,
+    ComposeCommandRequest,
+    ComposeCommandResponse,
     ContainerStatus,
     HostInfo,
     HostStateResponse,
@@ -3525,6 +3527,33 @@ def validate_new_project_compose(
     return ComposeValidateResponse(ok=ok, output=output)
 
 
+@app.post(
+    "/hosts/{host_id}/projects/{project}/compose/command",
+    response_model=ComposeCommandResponse,
+)
+async def run_compose_command_endpoint(
+    host_id: str, project: str, payload: ComposeCommandRequest
+) -> ComposeCommandResponse:
+    host = _host(host_id)
+    command = (payload.command or "").strip()
+    if not command:
+        raise HTTPException(status_code=400, detail="Command is required.")
+    try:
+        result = await asyncio.to_thread(
+            compose.run_compose_command, host, project, command
+        )
+    except Exception as exc:
+        _handle_errors(exc)
+    return ComposeCommandResponse(
+        host_id=host_id,
+        project=project,
+        command=command,
+        exit_code=result.exit_code,
+        stdout=result.stdout or "",
+        stderr=result.stderr or "",
+    )
+
+
 @app.post("/auth/token", response_class=PlainTextResponse)
 def create_auth_token(payload: AuthTokenRequest) -> str:
     username = payload.username.strip()
@@ -3555,6 +3584,75 @@ def create_auth_token(payload: AuthTokenRequest) -> str:
     }
     encoded = base64.b64encode(json.dumps(token_payload, separators=(",", ":")).encode()).decode()
     return encoded
+
+
+@app.get(
+    "/hosts/{host_id}/projects/{project}/compose/command/stream",
+    response_class=StreamingResponse,
+)
+async def stream_compose_command(
+    host_id: str,
+    project: str,
+    request: Request,
+    command: str = Query(..., min_length=1),
+) -> StreamingResponse:
+    host = _host(host_id)
+    command = (command or "").strip()
+    if not command:
+        raise HTTPException(status_code=400, detail="Command is required.")
+    try:
+        command_str = compose.compose_command_string(host, project, command)
+    except Exception as exc:
+        _handle_errors(exc)
+
+    async def event_stream():
+        queue: asyncio.Queue[Optional[tuple[str, str]]] = asyncio.Queue()
+        stop_event = threading.Event()
+
+        def worker() -> None:
+            try:
+                for stream_name, line in stream_ssh_command(
+                    host, command_str, stop_event, timeout=300, include_exit=True
+                ):
+                    asyncio.run_coroutine_threadsafe(
+                        queue.put((stream_name, line)), loop
+                    )
+            except Exception as exc:
+                asyncio.run_coroutine_threadsafe(
+                    queue.put(("error", str(exc))), loop
+                )
+            finally:
+                asyncio.run_coroutine_threadsafe(queue.put(None), loop)
+
+        loop = asyncio.get_running_loop()
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+
+        try:
+            while True:
+                if await request.is_disconnected():
+                    stop_event.set()
+                    break
+                item = await queue.get()
+                if item is None:
+                    break
+                stream_name, line = item
+                if stream_name == "exit":
+                    try:
+                        exit_code = int(line)
+                    except (TypeError, ValueError):
+                        exit_code = 0
+                    yield _sse_event("complete", {"exit_code": exit_code})
+                    continue
+                if stream_name == "error":
+                    yield _sse_event("error", {"message": line})
+                    continue
+                event_name = stream_name if stream_name in ("stdout", "stderr") else "stdout"
+                yield _sse_event(event_name, {"line": line})
+        finally:
+            stop_event.set()
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.post("/compose/convert", response_model=RunToComposeResponse)
