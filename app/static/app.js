@@ -4060,8 +4060,6 @@ function renderProjectList() {
 
     const servicesPanel = row.querySelector(".services-panel");
     const servicesList = row.querySelector(".services-list");
-    const servicesCount = row.querySelector(".services-count");
-    servicesCount.textContent = `${entry.serviceCount} total`;
     servicesList.innerHTML = "";
 
     if (!entry.services.length) {
@@ -4084,11 +4082,6 @@ function renderProjectList() {
         const meta = document.createElement("div");
         meta.className = "service-meta";
 
-        const metaParts = [];
-        if (service.status) {
-          metaParts.push(`status: ${service.status}`);
-        }
-        meta.textContent = metaParts.join(" • ");
 
         details.appendChild(name);
         details.appendChild(meta);
@@ -4114,6 +4107,7 @@ function renderProjectList() {
         iconsWrap.className = "service-icons";
         iconsWrap.appendChild(badge);
         iconsWrap.appendChild(updatesIcon);
+        meta.appendChild(iconsWrap);
 
         const actions = document.createElement("div");
         actions.className = "service-actions";
@@ -4208,7 +4202,6 @@ function renderProjectList() {
         actions.appendChild(logsBtn);
 
         item.appendChild(details);
-        item.appendChild(iconsWrap);
         item.appendChild(actions);
         servicesList.appendChild(item);
       });
