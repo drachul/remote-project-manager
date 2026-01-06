@@ -17,7 +17,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterator, List, Optional
 
 import grp
 import pwd
@@ -612,7 +612,8 @@ def _log_db_path_diagnostics(path: str) -> None:
 def _collect_fd_stats() -> Optional[dict]:
     fd_dir = "/proc/self/fd"
     try:
-        entries = list(os.scandir(fd_dir))
+        with os.scandir(fd_dir) as it:
+            entries = list(it)
     except OSError as exc:
         logger.debug("FD scan failed path=%s error=%s", fd_dir, exc)
         return None
@@ -677,8 +678,7 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
     if directory:
         os.makedirs(directory, exist_ok=True)
     try:
-        with _connect_db(path) as conn:
-            conn.execute("PRAGMA foreign_keys = ON")
+        with _open_db(path) as conn:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
             )
@@ -1061,12 +1061,21 @@ def _set_project_sleeping(host_id: str, project: str, sleeping: bool) -> None:
             (1 if sleeping else 0, host_id, project_id),
         )
 
-def _open_db(path: str) -> sqlite3.Connection:
+
+@contextlib.contextmanager
+def _open_db(path: str) -> Iterator[sqlite3.Connection]:
     conn = _connect_db(path)
     conn.execute("PRAGMA foreign_keys = ON")
     if logger.isEnabledFor(logging.DEBUG):
         conn.set_trace_callback(lambda statement: logger.debug("SQL: %s", statement))
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _read_setting(path: str, key: str) -> Optional[str]:
