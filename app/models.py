@@ -32,6 +32,24 @@ class BackupConfigEntry(BaseModel):
     enabled: bool = True
 
 
+class BackupTargetEntry(BaseModel):
+    id: str
+    enabled: bool = True
+
+
+class BackupProjectsResponse(BaseModel):
+    backup_id: str
+    projects: List[str] = Field(default_factory=list)
+
+
+class BackupRestoreRequest(BaseModel):
+    backup_id: str
+    host_id: str
+    project: Optional[str] = None
+    projects: List[str] = Field(default_factory=list)
+    overwrite: bool = False
+
+
 class SimpleStatusResponse(BaseModel):
     ok: bool
 

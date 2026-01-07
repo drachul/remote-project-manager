@@ -95,6 +95,46 @@ def run_ssh_command(host: HostConfig, command: str, timeout: int = 60) -> SSHRes
     )
 
 
+
+
+def run_ssh_command_password(
+    hostname: str,
+    username: str,
+    password: str,
+    command: str,
+    port: int = 22,
+    timeout: int = 60,
+) -> SSHResult:
+    target = f"{username}@{hostname}:{port}"
+    try:
+        logger.debug("SSH exec %s: %s", target, _redact_command(command))
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(
+            hostname=hostname,
+            username=username,
+            password=password,
+            port=port,
+            timeout=timeout,
+            allow_agent=False,
+            look_for_keys=False,
+        )
+        stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
+        exit_code = stdout.channel.recv_exit_status()
+        stdout_text = stdout.read().decode("utf-8", errors="replace")
+        stderr_text = stderr.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        raise SSHError(f"SSH command failed: {exc}") from exc
+    finally:
+        if "client" in locals():
+            client.close()
+
+    return SSHResult(
+        command=command,
+        exit_code=exit_code,
+        stdout=stdout_text.strip(),
+        stderr=stderr_text.strip(),
+    )
 def run_ssh_command_cancelable(
     host: HostConfig,
     command: str,

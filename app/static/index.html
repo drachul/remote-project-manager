@@ -54,6 +54,7 @@
             </div>
             <div class="panel-actions">
               <button class="btn subtle" id="openBackupSchedule">Backup schedule</button>
+              <button class="btn subtle" id="openRestoreModal">Restore</button>
               <button class="btn subtle" id="openCreateProject">Create</button>
             </div>
           </div>
@@ -755,6 +756,43 @@
 
               <div class="schedule-status" id="scheduleStatus"></div>
             </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal hidden" id="restoreModal">
+      <div class="modal-backdrop"></div>
+      <div class="modal-card">
+        <header class="modal-header">
+          <div>
+            <div class="modal-title">Restore from backup</div>
+            <div class="modal-subtitle">Select a backup target and project to restore.</div>
+          </div>
+          <button class="modal-close" id="closeRestoreModal" aria-label="Close">
+            <span class="material-symbols-outlined">close</span>
+          </button>
+        </header>
+        <div class="modal-body">
+          <div class="config-grid">
+            <label class="control">
+              Backup target
+              <select id="restoreBackupTarget"></select>
+            </label>
+            <label class="control">
+              Restore host
+              <select id="restoreHost"></select>
+            </label>
+          </div>
+          <label class="control">
+            Project to restore
+            <select id="restoreProject" size="8" multiple></select>
+          </label>
+          <div class="field-hint">Select one or more projects to restore.</div>
+          <div class="config-status" id="restoreStatus"></div>
+          <div class="schedule-actions">
+            <button class="btn primary" id="runRestore">Restore</button>
+            <button class="btn subtle" id="cancelRestore">Cancel</button>
           </div>
         </div>
       </div>

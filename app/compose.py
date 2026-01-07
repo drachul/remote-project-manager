@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import shlex
+import subprocess
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
@@ -18,6 +19,7 @@ from .ssh import (
     read_remote_file,
     run_ssh_command,
     run_ssh_command_cancelable,
+    run_ssh_command_password,
     write_remote_file,
 )
 
@@ -848,6 +850,131 @@ def build_backup_command(
     return dest, f"{mkdir_cmd} && {rsync_cmd}"
 
 
+
+
+def project_exists(host: HostConfig, project: str) -> bool:
+    project_dir = _project_dir(host, project)
+    command = f"test -d {shlex.quote(project_dir)}"
+    result = run_ssh_command(host, command, timeout=30)
+    return result.exit_code == 0
+
+
+def list_backup_projects(backup: BackupConfig) -> List[str]:
+    base_path = backup.base_path.rstrip("/") or "/"
+    protocol = (backup.protocol or "ssh").lower()
+    if protocol == "rsync":
+        user_prefix = f"{backup.user}@" if backup.user else ""
+        src_path = base_path.lstrip("/")
+        if src_path and not src_path.endswith("/"):
+            src_path = f"{src_path}/"
+        src_url = f"rsync://{user_prefix}{backup.host}/{src_path}"
+        env = os.environ.copy()
+        env["RSYNC_PASSWORD"] = backup.password
+        logger.debug(
+            "RSYNC list command: rsync --list-only --out-format=%%n --filter=+ */ --filter=- * %s",
+            src_url,
+        )
+        try:
+            result = subprocess.run(
+                [
+                    "rsync",
+                    "--list-only",
+                    "--out-format=%n",
+                    "--filter=+ */",
+                    "--filter=- *",
+                    src_url,
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise ComposeError("rsync is not available to list backups") from exc
+        if result.returncode != 0:
+            message = result.stderr or result.stdout or "Backup listing failed"
+            raise ComposeError(message)
+        projects = []
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            parts = stripped.split()
+            if len(parts) >= 5:
+                name = parts[4]
+            else:
+                name = stripped.rstrip("/")
+                name = name.lstrip("./")
+                name = name.split("/")[-1]
+            name = name.rstrip("/")
+            if not name or name in (".", ".."):
+                continue
+            projects.append(name)
+        return projects
+    command = f"ls -1 {shlex.quote(base_path)}"
+    result = run_ssh_command_password(
+        backup.host,
+        backup.user,
+        backup.password,
+        command,
+        port=backup.port,
+        timeout=30,
+    )
+    if result.exit_code != 0:
+        message = result.stderr or result.stdout or "Backup listing failed"
+        raise ComposeError(message)
+    projects = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return projects
+
+
+def restore_project(
+    host_id: str, host: HostConfig, project: str, backup: BackupConfig
+) -> Tuple[str, str]:
+    dest, command = build_restore_command(host_id, host, project, backup)
+    result = run_ssh_command(host, command, timeout=600)
+    if result.exit_code != 0:
+        message = result.stderr or result.stdout or "Restore failed"
+        raise ComposeError(message)
+    output = result.stdout or result.stderr or ""
+    return dest, output.strip()
+
+
+def build_restore_command(
+    host_id: str, host: HostConfig, project: str, backup: BackupConfig
+) -> Tuple[str, str]:
+    project_dir = _project_dir(host, project)
+    project_root = host.project_root.rstrip("/")
+    if not project_root:
+        raise ComposeError("Project root is not configured for restore.")
+    dest_dir = f"{project_root}/"
+    dest_q = shlex.quote(dest_dir)
+    src_base = backup.base_path.rstrip("/")
+    src = f"{src_base}/{project}"
+    password_q = shlex.quote(backup.password)
+    protocol = (backup.protocol or "ssh").lower()
+    mkdir_cmd = f"mkdir -p {shlex.quote(project_root)}"
+
+    if protocol == "rsync":
+        user_prefix = f"{backup.user}@" if backup.user else ""
+        src_url = f"rsync://{user_prefix}{backup.host}/{src.lstrip('/')}"
+        src_q = shlex.quote(src_url)
+        rsync_cmd = (
+            f"RSYNC_PASSWORD={password_q} rsync -az --links --delete {src_q} {dest_q}"
+        )
+        logger.debug("Restore rsync src=%s dest=%s", src_url, dest_dir)
+        return project_dir, f"{mkdir_cmd} && {rsync_cmd}"
+
+    user_host = f"{backup.user}@{backup.host}"
+    user_host_q = shlex.quote(user_host)
+    ssh_opts = f"ssh -p {backup.port} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    ssh_opts_q = shlex.quote(ssh_opts)
+    src_q = shlex.quote(f"{user_host}:{src}")
+    rsync_cmd = (
+        f"sshpass -p {password_q} rsync -az --links --delete -e {ssh_opts_q} {src_q} {dest_q}"
+    )
+    logger.debug("Restore rsync src=%s dest=%s", f"{user_host}:{src}", dest_dir)
+    return project_dir, f"{mkdir_cmd} && {rsync_cmd}"
 def _parse_ps_output(output: str) -> List[dict]:
     text = output.strip()
     if not text:

@@ -49,6 +49,9 @@ from .models import (
     BackupSettingsResponse,
     HostConfigEntry,
     BackupConfigEntry,
+    BackupTargetEntry,
+    BackupProjectsResponse,
+    BackupRestoreRequest,
     SimpleStatusResponse,
     ComposeFileResponse,
     ComposeFileUpdateRequest,
@@ -1191,6 +1194,10 @@ def _load_backup_from_db(path: str) -> Optional[BackupConfig]:
         ).fetchone()
     if not row:
         return None
+    return _backup_config_from_row(row)
+
+
+def _backup_config_from_row(row: sqlite3.Row) -> BackupConfig:
     address = row["address"] or ""
     username = row["username"] or ""
     password = row["password"] or ""
@@ -1207,6 +1214,20 @@ def _load_backup_from_db(path: str) -> Optional[BackupConfig]:
         protocol=protocol,
         port=int(port),
     )
+
+
+def _load_backup_from_db_by_id(path: str, backup_id: str) -> BackupConfig:
+    _ensure_db(path)
+    with _open_db(path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT address, username, password, base_path, protocol, port "
+            "FROM backups WHERE id = ?",
+            (backup_id,),
+        ).fetchone()
+    if not row:
+        raise ConfigError(f"Unknown backup id: {backup_id}")
+    return _backup_config_from_row(row)
 
 
 def _load_config_from_db(config: AppConfig) -> AppConfig:
@@ -3076,6 +3097,107 @@ def delete_backup_config(backup_id: str) -> SimpleStatusResponse:
     _refresh_config_from_db()
     _restart_backup_task()
     return SimpleStatusResponse(ok=True)
+
+
+@app.get("/backup/targets", response_model=List[BackupTargetEntry])
+def list_backup_targets() -> List[BackupTargetEntry]:
+    path = _require_db_path()
+    with _open_db(path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, enabled FROM backups ORDER BY id"
+        ).fetchall()
+    targets = []
+    for row in rows:
+        backup_id = row["id"]
+        if not backup_id:
+            continue
+        enabled = True if row["enabled"] is None else bool(row["enabled"])
+        targets.append(BackupTargetEntry(id=backup_id, enabled=enabled))
+    return targets
+
+
+@app.get("/backup/targets/{backup_id}/projects", response_model=BackupProjectsResponse)
+def list_backup_projects(backup_id: str) -> BackupProjectsResponse:
+    path = _require_db_path()
+    try:
+        backup = _load_backup_from_db_by_id(path, backup_id)
+    except ConfigError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        projects = compose.list_backup_projects(backup)
+    except Exception as exc:
+        _handle_errors(exc)
+    return BackupProjectsResponse(backup_id=backup_id, projects=projects)
+
+
+@app.post("/backup/restore", response_model=List[OperationResponse])
+def restore_backup(payload: BackupRestoreRequest) -> List[OperationResponse]:
+    host = _host(payload.host_id)
+    path = _require_db_path()
+    try:
+        backup = _load_backup_from_db_by_id(path, payload.backup_id)
+    except ConfigError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    projects = payload.projects or ([] if payload.project is None else [payload.project])
+    projects = [project for project in projects if project]
+    if not projects:
+        raise HTTPException(status_code=400, detail="No projects selected for restore.")
+    if not payload.overwrite:
+        existing = [project for project in projects if compose.project_exists(host, project)]
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail="Projects already exist on the host: " + ", ".join(existing) + ". Confirm overwrite to restore.",
+            )
+    results: List[OperationResponse] = []
+    for project in projects:
+        running_before = False
+        stop_message = None
+        start_message = None
+        try:
+            if compose.project_exists(host, project):
+                overall, containers, _ = compose.project_status(host, project)
+                running_before = _is_project_running(overall, containers)
+        except Exception:
+            running_before = False
+        if running_before:
+            try:
+                stop_result = compose.stop_project(host, project)
+                if stop_result.stdout:
+                    stop_message = stop_result.stdout.strip()
+            except Exception as exc:
+                stop_message = f"Stop failed: {exc}"
+        try:
+            dest, output = compose.restore_project(payload.host_id, host, project, backup)
+            message = output or f"Restore complete: {dest}"
+        except Exception as exc:
+            message = f"Restore failed: {exc}"
+        if running_before:
+            try:
+                start_result = compose.start_project(host, project)
+                if start_result.stdout:
+                    start_message = start_result.stdout.strip()
+                else:
+                    start_message = "Project started"
+            except Exception as exc:
+                start_message = f"Start failed: {exc}"
+        extra_parts = []
+        if stop_message:
+            extra_parts.append(f"Stop: {stop_message}")
+        if start_message:
+            extra_parts.append(f"Start: {start_message}")
+        if extra_parts:
+            message = f"{message}\n" + "\n".join(extra_parts)
+        results.append(
+            OperationResponse(
+                host_id=payload.host_id,
+                project=project,
+                action="restore",
+                output=message,
+            )
+        )
+    return results
 
 
 @app.get("/config/users", response_model=List[UserConfigEntry])

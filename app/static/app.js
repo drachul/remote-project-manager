@@ -64,6 +64,15 @@ const shellTerminal = document.getElementById("shellTerminal");
 const openBackupScheduleBtn = document.getElementById("openBackupSchedule");
 const backupScheduleModal = document.getElementById("backupScheduleModal");
 const closeBackupScheduleModalBtn = document.getElementById("closeBackupScheduleModal");
+const openRestoreModalBtn = document.getElementById("openRestoreModal");
+const restoreModal = document.getElementById("restoreModal");
+const closeRestoreModalBtn = document.getElementById("closeRestoreModal");
+const restoreBackupTarget = document.getElementById("restoreBackupTarget");
+const restoreHostSelect = document.getElementById("restoreHost");
+const restoreProjectSelect = document.getElementById("restoreProject");
+const restoreStatus = document.getElementById("restoreStatus");
+const runRestoreBtn = document.getElementById("runRestore");
+const cancelRestoreBtn = document.getElementById("cancelRestore");
 const openCreateProjectBtn = document.getElementById("openCreateProject");
 const createProjectModal = document.getElementById("createProjectModal");
 const closeCreateProjectModalBtn = document.getElementById("closeCreateProjectModal");
@@ -168,6 +177,9 @@ const state = {
   serviceActionProgress: new Map(),
   authExpiredNotified: false,
   actionMenuListenerBound: false,
+  restoreInProgress: false,
+  restoreCancelRequested: false,
+  restoreLockedProjects: new Set(),
   projectFilters: {
     hosts: [],
     sortBy: "name",
@@ -2492,6 +2504,316 @@ function closeBackupScheduleModal() {
   }
 }
 
+function setRestoreStatus(message, isError = false) {
+  if (!restoreStatus) {
+    return;
+  }
+  restoreStatus.textContent = message || "";
+  restoreStatus.classList.toggle("error", Boolean(isError));
+}
+
+function updateRestoreButtonState() {
+  if (!openRestoreModalBtn) {
+    return;
+  }
+  const label = state.restoreInProgress ? "Restoring" : "Restore";
+  setActionLabel(openRestoreModalBtn, label);
+  openRestoreModalBtn.title = state.restoreInProgress
+    ? "Cancel restore after the current project finishes"
+    : "Restore";
+}
+
+function requestRestoreCancel() {
+  if (!state.restoreInProgress || state.restoreCancelRequested) {
+    return;
+  }
+  state.restoreCancelRequested = true;
+  updateRestoreButtonState();
+  showToast("Restore will stop after the current project finishes.");
+}
+
+function handleRestoreButtonClick() {
+  if (state.restoreInProgress) {
+    requestRestoreCancel();
+    return;
+  }
+  openRestoreModal();
+}
+
+
+function populateRestoreHosts() {
+  if (!restoreHostSelect) {
+    return;
+  }
+  restoreHostSelect.innerHTML = "";
+  if (!state.hosts.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No hosts available";
+    restoreHostSelect.appendChild(option);
+    if (runRestoreBtn) {
+      runRestoreBtn.disabled = true;
+    }
+    return;
+  }
+  state.hosts.forEach((host) => {
+    const option = document.createElement("option");
+    option.value = host.host_id;
+    option.textContent = `${host.host_id} (${host.user}@${host.host})`;
+    restoreHostSelect.appendChild(option);
+  });
+  if (runRestoreBtn) {
+    runRestoreBtn.disabled = false;
+  }
+}
+
+function populateRestoreTargets(targets) {
+  if (!restoreBackupTarget) {
+    return;
+  }
+  restoreBackupTarget.innerHTML = "";
+  if (!targets.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No backup targets";
+    restoreBackupTarget.appendChild(option);
+    restoreBackupTarget.disabled = true;
+    if (runRestoreBtn) {
+      runRestoreBtn.disabled = true;
+    }
+    return;
+  }
+  targets.forEach((target) => {
+    const option = document.createElement("option");
+    option.value = target.id;
+    option.textContent = target.enabled ? target.id : `${target.id} (disabled)`;
+    restoreBackupTarget.appendChild(option);
+  });
+  restoreBackupTarget.disabled = false;
+}
+
+function populateRestoreProjects(projects) {
+  if (!restoreProjectSelect) {
+    return;
+  }
+  restoreProjectSelect.innerHTML = "";
+  if (!projects.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No backups found";
+    restoreProjectSelect.appendChild(option);
+    if (runRestoreBtn) {
+      runRestoreBtn.disabled = true;
+    }
+    return;
+  }
+  projects.forEach((project) => {
+    const option = document.createElement("option");
+    option.value = project;
+    option.textContent = project;
+    restoreProjectSelect.appendChild(option);
+  });
+  if (restoreProjectSelect.options.length) {
+    restoreProjectSelect.options[0].selected = true;
+  }
+  if (runRestoreBtn) {
+    runRestoreBtn.disabled = false;
+  }
+}
+
+async function loadRestoreTargets() {
+  if (!restoreBackupTarget) {
+    return;
+  }
+  setRestoreStatus("Loading backup targets...");
+  try {
+    const targets = await api.get("/backup/targets");
+    populateRestoreTargets(targets || []);
+    setRestoreStatus("");
+  } catch (err) {
+    populateRestoreTargets([]);
+    setRestoreStatus(`Failed to load backup targets: ${err.message}`, true);
+  }
+}
+
+async function loadRestoreProjects() {
+  if (!restoreBackupTarget || !restoreProjectSelect) {
+    return;
+  }
+  const backupId = restoreBackupTarget.value;
+  if (!backupId) {
+    populateRestoreProjects([]);
+    setRestoreStatus("Select a backup target to load projects.");
+    return;
+  const stateHost = state.stateSnapshot?.hosts?.find((item) => item.host_id === hostId);
+  let existing = [];
+  if (stateHost && Array.isArray(stateHost.projects)) {
+    existing = projects.filter((project) =>
+      stateHost.projects.some((entry) => entry.project === project)
+    );
+  } else {
+    const hostEntry = state.hosts.find((item) => item.host_id === hostId);
+    if (hostEntry && Array.isArray(hostEntry.projects)) {
+      existing = projects.filter((project) => hostEntry.projects.includes(project));
+    }
+  }
+  if (!overwrite && existing.length) {
+    const confirmOverwrite = window.confirm(
+      `Project(s) already exist on ${hostId}: ${existing.join(", ")}\. Overwrite with the backup?`
+    );
+    if (confirmOverwrite) {
+      await runRestore(true);
+      return;
+    }
+    setRestoreStatus("Restore cancelled.");
+    return;
+  }
+  }
+  setRestoreStatus("Loading backup projects...");
+  try {
+    const data = await api.get(`/backup/targets/${encodeURIComponent(backupId)}/projects`);
+    const projects = data.projects || [];
+    populateRestoreProjects(projects);
+    if (projects.length) {
+      setRestoreStatus(`Loaded ${projects.length} project${projects.length === 1 ? "" : "s"}.`);
+    } else {
+      setRestoreStatus("No backups found for this target.");
+    }
+  } catch (err) {
+    populateRestoreProjects([]);
+    setRestoreStatus(`Failed to load backups: ${err.message}`, true);
+  }
+}
+
+async function openRestoreModal() {
+  if (!restoreModal) {
+    return;
+  }
+  restoreModal.classList.remove("hidden");
+  setRestoreStatus("");
+  populateRestoreHosts();
+  await loadRestoreTargets();
+  await loadRestoreProjects();
+}
+
+function closeRestoreModal() {
+  if (restoreModal) {
+    restoreModal.classList.add("hidden");
+  }
+}
+
+async function runRestore(overwrite = false) {
+  if (!restoreBackupTarget || !restoreHostSelect || !restoreProjectSelect) {
+    return;
+  }
+  if (state.restoreInProgress) {
+    requestRestoreCancel();
+    return;
+  }
+  const backupId = restoreBackupTarget.value;
+  const hostId = restoreHostSelect.value;
+  const projects = Array.from(restoreProjectSelect.selectedOptions)
+    .map((option) => option.value)
+    .filter(Boolean);
+  if (!backupId || !hostId || !projects.length) {
+    setRestoreStatus("Select a backup target, host, and project(s) to restore.", true);
+    return;
+  }
+  const stateHost = state.stateSnapshot?.hosts?.find((item) => item.host_id === hostId);
+  let existing = [];
+  if (stateHost && Array.isArray(stateHost.projects)) {
+    existing = projects.filter((project) =>
+      stateHost.projects.some((entry) => entry.project === project)
+    );
+  } else {
+    const hostEntry = state.hosts.find((item) => item.host_id === hostId);
+    if (hostEntry && Array.isArray(hostEntry.projects)) {
+      existing = projects.filter((project) => hostEntry.projects.includes(project));
+    }
+  }
+  if (!overwrite && existing.length) {
+    const confirmOverwrite = window.confirm(
+      `Project(s) already exist on ${hostId}: ${existing.join(", ")}. Overwrite with the backup?`
+    );
+    if (confirmOverwrite) {
+      await runRestore(true);
+      return;
+    }
+    setRestoreStatus("Restore cancelled.");
+    return;
+  }
+  state.restoreInProgress = true;
+  state.restoreCancelRequested = false;
+  state.restoreLockedProjects = new Set(existing.map((project) => `${hostId}::${project}`));
+  updateRestoreButtonState();
+  if (runRestoreBtn) {
+    runRestoreBtn.disabled = true;
+  }
+  closeRestoreModal();
+  closeAllActionMenus();
+  renderProjectList();
+  setBulkProgress("restore", 0, projects.length, hostId);
+  setRestoreStatus(`Restoring ${projects.join(", ")}...`);
+  try {
+    const results = [];
+    let completed = 0;
+    for (const project of projects) {
+      const payload = {
+        backup_id: backupId,
+        host_id: hostId,
+        projects: [project],
+        overwrite,
+      };
+      try {
+        const result = await api.post("/backup/restore", payload);
+        const entries = Array.isArray(result) ? result : [result];
+        results.push(...entries);
+      } catch (err) {
+        results.push({
+          project,
+          output: `Restore failed: ${err.message || String(err)}`,
+        });
+      }
+      completed += 1;
+      setBulkProgress("restore", completed, projects.length, project);
+      if (state.restoreCancelRequested) {
+        break;
+      }
+    }
+    const failures = results.filter((entry) =>
+      String(entry.output || "").toLowerCase().includes("restore failed")
+    );
+    const successCount = results.length - failures.length;
+    const cancelled = state.restoreCancelRequested && completed < projects.length;
+    const summary = cancelled
+      ? `Restore cancelled after ${completed}/${projects.length}.`
+      : `Restore complete: ${successCount} succeeded, ${failures.length} failed.`;
+    let detail = "";
+    if (failures.length) {
+      detail = failures
+        .map((entry) => `${entry.project || "unknown"}: ${entry.output}`)
+        .join(" | ");
+    }
+    const message = detail ? `${summary} ${detail}` : summary;
+    setRestoreStatus(message, failures.length > 0);
+    showToast(summary, failures.length > 0 ? "error" : "success");
+    setBulkProgress("restore", completed, projects.length, hostId);
+  } catch (err) {
+    setRestoreStatus(`Restore failed: ${err.message}`, true);
+    showToast(`Restore failed: ${err.message}`, "error");
+  } finally {
+    state.restoreInProgress = false;
+    state.restoreCancelRequested = false;
+    state.restoreLockedProjects = new Set();
+    updateRestoreButtonState();
+    renderProjectList();
+    if (runRestoreBtn) {
+      runRestoreBtn.disabled = false;
+    }
+    window.setTimeout(() => setBulkProgress("restore", 0, 0), 1500);
+  }
+}
+
 function resetCreateProgress() {
   if (createProjectProgressText) {
     createProjectProgressText.textContent = "Awaiting input";
@@ -3899,6 +4221,7 @@ function renderProjectList() {
     visibleEntries.forEach((entry) => {
       const row = projectRowTemplate.content.firstElementChild.cloneNode(true);
       row.dataset.projectKey = entry.key;
+      const restoreLocked = state.restoreInProgress && state.restoreLockedProjects.has(entry.key);
       const checkbox = row.querySelector(".project-checkbox");
     checkbox.checked = state.selectedProjects.has(entry.key);
     checkbox.addEventListener("change", () => {
@@ -3913,13 +4236,22 @@ function renderProjectList() {
       updateBulkVisibility();
     });
 
-    row.querySelector(".project-name").textContent = entry.projectName;
+    const nameCell = row.querySelector(".project-name");
+    nameCell.textContent = entry.projectName;
+    if (restoreLocked) {
+      const badge = document.createElement("span");
+      badge.className = "restore-badge";
+      badge.textContent = "Restoring";
+      badge.title = "Restore in progress";
+      nameCell.appendChild(badge);
+    }
 
     const statusInfo = projectStatusLabel(entry.status);
     const updatesInfo = updateBadgeLabel(entry.updatesAvailable);
 
     const deleteBtn = row.querySelector(".project-delete");
     if (deleteBtn) {
+      deleteBtn.disabled = restoreLocked;
       deleteBtn.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -3950,6 +4282,14 @@ function renderProjectList() {
       actionMenuPanel.addEventListener("click", (event) => {
         event.stopPropagation();
       });
+      if (restoreLocked) {
+        actionMenuToggle.disabled = true;
+        actionMenuToggle.dataset.forceDisabled = "true";
+        actionMenuPanel.classList.add("hidden");
+      } else {
+        actionMenuToggle.disabled = false;
+        actionMenuToggle.dataset.forceDisabled = "";
+      }
     }
 
     const statusIcon = row.querySelector(".status-icon");
@@ -4016,27 +4356,31 @@ function renderProjectList() {
 
     if (startBtn) {
       startBtn.classList.add("action-ready");
+      startBtn.dataset.forceDisabled = restoreLocked ? "true" : "";
       setActionRunning(startBtn, startRunning);
       startBtn.classList.toggle("hidden", !showStart);
     }
     if (stopBtn) {
       stopBtn.classList.add("action-ready");
+      stopBtn.dataset.forceDisabled = restoreLocked ? "true" : "";
       setActionRunning(stopBtn, stopRunning);
       stopBtn.classList.toggle("hidden", !showStop);
     }
     if (restartBtn) {
       restartBtn.classList.add("action-ready");
+      restartBtn.dataset.forceDisabled = restoreLocked ? "true" : "";
       setActionRunning(restartBtn, restartRunning);
       restartBtn.classList.toggle("hidden", !showRestart);
     }
     if (updateBtn) {
       updateBtn.classList.add("action-ready");
+      updateBtn.dataset.forceDisabled = restoreLocked ? "true" : "";
       setActionRunning(updateBtn, updateRunning);
       updateBtn.classList.remove("hidden");
     }
     if (backupBtn) {
       backupBtn.classList.add("action-ready");
-      const forceDisabled = !state.backupTargetsAvailable;
+      const forceDisabled = restoreLocked || !state.backupTargetsAvailable;
       backupBtn.dataset.forceDisabled = forceDisabled ? "true" : "";
       if (forceDisabled) {
         backupBtn.disabled = true;
@@ -4046,6 +4390,7 @@ function renderProjectList() {
     }
     if (refreshBtn) {
       refreshBtn.classList.add("action-ready");
+      refreshBtn.dataset.forceDisabled = restoreLocked ? "true" : "";
       setActionRunning(refreshBtn, refreshRunning);
       refreshBtn.classList.remove("hidden");
     }
@@ -4135,6 +4480,10 @@ function renderProjectList() {
           iconSpan.className = "material-symbols-outlined action-icon";
           iconSpan.textContent = icon;
           button.appendChild(iconSpan);
+          if (restoreLocked) {
+            button.disabled = true;
+            button.dataset.forceDisabled = "true";
+          }
           button.addEventListener("click", () =>
             runServiceAction(button, entry.hostId, entry.projectName, serviceName, action)
           );
@@ -4177,6 +4526,9 @@ function renderProjectList() {
         shellIcon.className = "material-symbols-outlined action-icon";
         shellIcon.textContent = "terminal";
         shellBtn.appendChild(shellIcon);
+        if (restoreLocked) {
+          shellBtn.disabled = true;
+        }
         shellBtn.addEventListener("click", () =>
           openShellModal(entry.hostId, entry.projectName, serviceName)
         );
@@ -4189,6 +4541,9 @@ function renderProjectList() {
         logsIcon.className = "material-symbols-outlined action-icon";
         logsIcon.textContent = "article";
         logsBtn.appendChild(logsIcon);
+        if (restoreLocked) {
+          logsBtn.disabled = true;
+        }
         logsBtn.addEventListener("click", () =>
           openLogsModal(entry.hostId, entry.projectName, serviceName)
         );
@@ -4211,6 +4566,7 @@ function renderProjectList() {
       "action-running",
       actionStates.size > 0 || serviceActionActive
     );
+    row.classList.toggle("restore-running", restoreLocked);
 
     servicesSummary.addEventListener("click", () => {
       const isHidden = servicesPanel.classList.toggle("hidden");
@@ -4229,6 +4585,7 @@ function renderProjectList() {
     });
 
     const logsBtn = row.querySelector(".logs");
+    logsBtn.disabled = restoreLocked;
     logsBtn.addEventListener("click", (event) => {
       event.stopPropagation();
       closeAllActionMenus();
@@ -4236,6 +4593,7 @@ function renderProjectList() {
     });
 
     const composeBtn = row.querySelector(".compose");
+    composeBtn.disabled = restoreLocked;
     composeBtn.addEventListener("click", (event) => {
       event.stopPropagation();
       closeAllActionMenus();
@@ -4244,6 +4602,7 @@ function renderProjectList() {
 
     const commandBtn = row.querySelector(".compose-command");
     if (commandBtn) {
+      commandBtn.disabled = restoreLocked;
       commandBtn.addEventListener("click", (event) => {
         event.stopPropagation();
         closeAllActionMenus();
@@ -4764,6 +5123,8 @@ function setBulkProgress(action, current, total, currentTarget = "") {
     label = "Sleeping";
   } else if (action === "wake") {
     label = "Waking";
+  } else if (action === "restore") {
+    label = "Restoring";
   }
   const targetText = currentTarget ? ` • ${currentTarget}` : "";
   bulkProgressText.textContent = `${label} ${current}/${total}${targetText}`;
@@ -5331,6 +5692,9 @@ document.addEventListener("keydown", (event) => {
   if (backupScheduleModal && !backupScheduleModal.classList.contains("hidden")) {
     closeBackupScheduleModal();
   }
+  if (restoreModal && !restoreModal.classList.contains("hidden")) {
+    closeRestoreModal();
+  }
   if (createProjectModal && !createProjectModal.classList.contains("hidden")) {
     closeCreateProjectModal();
   }
@@ -5370,6 +5734,26 @@ closeBackupScheduleModalBtn.addEventListener("click", closeBackupScheduleModal);
 backupScheduleModal
   .querySelector(".modal-backdrop")
   .addEventListener("click", closeBackupScheduleModal);
+if (openRestoreModalBtn) {
+  openRestoreModalBtn.addEventListener("click", handleRestoreButtonClick);
+}
+if (closeRestoreModalBtn) {
+  closeRestoreModalBtn.addEventListener("click", closeRestoreModal);
+}
+if (cancelRestoreBtn) {
+  cancelRestoreBtn.addEventListener("click", closeRestoreModal);
+}
+if (restoreModal) {
+  restoreModal
+    .querySelector(".modal-backdrop")
+    .addEventListener("click", closeRestoreModal);
+}
+if (restoreBackupTarget) {
+  restoreBackupTarget.addEventListener("change", loadRestoreProjects);
+}
+if (runRestoreBtn) {
+  runRestoreBtn.addEventListener("click", () => runRestore(false));
+}
 if (openEventStatusBtn) {
   openEventStatusBtn.addEventListener("click", openEventStatusModal);
 }
