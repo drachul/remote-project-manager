@@ -160,6 +160,32 @@ function handleFindShortcut(event) {
   projectFilterName.select();
 }
 
+function setHardRestartActive(active) {
+  if (!document.body) {
+    return;
+  }
+  document.body.classList.toggle("hard-restart-active", active);
+  updateBulkRestartLabel(active);
+}
+
+function handleHardRestartModifier(event) {
+  if (event.key !== "Shift") {
+    return;
+  }
+  setHardRestartActive(event.type === "keydown");
+}
+
+function updateBulkRestartLabel(active) {
+  const button = document.querySelector('.bulk-action[data-bulk-action="restart"]');
+  if (!button) {
+    return;
+  }
+  if (!button.dataset.baseLabel) {
+    button.dataset.baseLabel = button.textContent || "Restart";
+  }
+  button.textContent = active ? "Hard Restart" : button.dataset.baseLabel;
+}
+
 const state = {
   hosts: [],
   stateSnapshot: null,
@@ -1467,6 +1493,13 @@ function setActionLabel(button, text) {
   } else {
     button.textContent = text;
   }
+}
+
+function formatActionLabel(action) {
+  if (action === "hard_restart") {
+    return "Hard restart";
+  }
+  return action.charAt(0).toUpperCase() + action.slice(1);
 }
 
 function setActionRunning(button, running) {
@@ -4338,7 +4371,8 @@ function renderProjectList() {
     const projectRunning = statusInfo.className === "up" || statusInfo.className === "degraded";
     const startRunning = actionStates.has("start");
     const stopRunning = actionStates.has("stop");
-    const restartRunning = actionStates.has("restart");
+    const restartRunning =
+      actionStates.has("restart") || actionStates.has("hard_restart");
     const updateRunning = actionStates.has("update");
     const backupRunning = actionStates.has("backup");
     const refreshRunning = actionStates.has("refresh");
@@ -4468,7 +4502,8 @@ function renderProjectList() {
         const serviceRunning = info.className === "up" || info.className === "degraded";
         const startRunning = serviceActions.has("start");
         const stopRunning = serviceActions.has("stop");
-        const restartRunning = serviceActions.has("restart");
+        const restartRunning =
+          serviceActions.has("restart") || serviceActions.has("hard_restart");
 
         const createServiceActionButton = (icon, label, action) => {
           const button = document.createElement("button");
@@ -4484,8 +4519,15 @@ function renderProjectList() {
             button.disabled = true;
             button.dataset.forceDisabled = "true";
           }
-          button.addEventListener("click", () =>
-            runServiceAction(button, entry.hostId, entry.projectName, serviceName, action)
+          button.addEventListener("click", (event) =>
+            runServiceAction(
+              button,
+              entry.hostId,
+              entry.projectName,
+              serviceName,
+              action,
+              event
+            )
           );
           return button;
         };
@@ -4580,7 +4622,9 @@ function renderProjectList() {
       }
       actionBtn.addEventListener("click", (event) => {
         event.stopPropagation();
-        runProjectAction(actionBtn, entry.hostId, entry.projectName, action);
+        const resolvedAction =
+          action === "restart" && event.shiftKey ? "hard_restart" : action;
+        runProjectAction(actionBtn, entry.hostId, entry.projectName, resolvedAction);
       });
     });
 
@@ -4906,11 +4950,12 @@ function clearProjectFilters() {
 
 async function runProjectAction(button, hostId, projectName, action) {
   const row = button.closest(".project-row");
-  const label = action.charAt(0).toUpperCase() + action.slice(1);
+  const label = formatActionLabel(action);
   const originalLabel = button.dataset.originalLabel || getActionLabel(button) || label;
   button.dataset.originalLabel = originalLabel;
   const isBackup = action === "backup";
   const projectKey = `${hostId}::${projectName}`;
+  const runningAction = button.dataset.runningAction || action;
   const isRunning = button.dataset.actionRunning === "true";
 
   if (isBackup && !state.backupTargetsAvailable) {
@@ -4920,15 +4965,16 @@ async function runProjectAction(button, hostId, projectName, action) {
 
   if (isRunning) {
     button.disabled = true;
+    const actionToStop = runningAction || action;
     try {
-      if (action === "refresh") {
+      if (actionToStop === "refresh") {
         return;
       }
       if (isBackup) {
         await api.post(`/hosts/${hostId}/projects/${projectName}/backup/stop`);
       } else {
         await api.post(
-          `/hosts/${hostId}/projects/${projectName}/actions/${action}/stop`
+          `/hosts/${hostId}/projects/${projectName}/actions/${actionToStop}/stop`
         );
       }
     } catch (err) {
@@ -4942,6 +4988,7 @@ async function runProjectAction(button, hostId, projectName, action) {
   }
 
   setActionRunning(button, true);
+  button.dataset.runningAction = action;
   setActionProgress(projectKey, action, true);
   if (row) {
     row.classList.add("action-running");
@@ -5029,6 +5076,7 @@ async function runProjectAction(button, hostId, projectName, action) {
       );
     }
     setActionRunning(button, false);
+    button.dataset.runningAction = "";
     if (!isBackup) {
       setActionLabel(button, originalLabel);
     }
@@ -5045,18 +5093,29 @@ async function runProjectAction(button, hostId, projectName, action) {
   }
 }
 
-async function runServiceAction(button, hostId, projectName, serviceName, action) {
+async function runServiceAction(
+  button,
+  hostId,
+  projectName,
+  serviceName,
+  action,
+  event
+) {
   const serviceItem = button.closest(".service-item");
   const row = button.closest(".project-row");
   const isRunning = button.dataset.actionRunning === "true";
   const serviceKeyValue = serviceActionKey(hostId, projectName, serviceName);
   const encodedService = encodeURIComponent(serviceName);
+  const resolvedAction =
+    action === "restart" && event?.shiftKey ? "hard_restart" : action;
+  const runningAction = button.dataset.runningAction || resolvedAction;
 
   if (isRunning) {
     button.disabled = true;
+    const actionToStop = runningAction || resolvedAction;
     try {
       await api.post(
-        `/hosts/${hostId}/projects/${projectName}/services/${encodedService}/actions/${action}/stop`
+        `/hosts/${hostId}/projects/${projectName}/services/${encodedService}/actions/${actionToStop}/stop`
       );
     } catch (err) {
       alert(`Stop failed: ${err.message}`);
@@ -5069,7 +5128,8 @@ async function runServiceAction(button, hostId, projectName, serviceName, action
   }
 
   setActionRunning(button, true);
-  setServiceActionProgress(serviceKeyValue, action, true);
+  button.dataset.runningAction = resolvedAction;
+  setServiceActionProgress(serviceKeyValue, resolvedAction, true);
   if (serviceItem) {
     serviceItem.classList.add("action-running");
   }
@@ -5079,17 +5139,23 @@ async function runServiceAction(button, hostId, projectName, serviceName, action
   let shouldRefresh = false;
   let completionMessage = "";
   try {
-    const result = await runServiceActionStream(hostId, projectName, serviceName, action);
+    const result = await runServiceActionStream(
+      hostId,
+      projectName,
+      serviceName,
+      resolvedAction
+    );
     completionMessage = result?.message || "Action complete";
     shouldRefresh = true;
-    const updatedStatus = action === "stop" ? "down" : "up";
+    const updatedStatus = resolvedAction === "stop" ? "down" : "up";
     updateLocalServiceStatus(hostId, projectName, serviceName, updatedStatus);
     renderProjectList();
     showToast(`${serviceName}: ${completionMessage}`);
   } catch (err) {
     alert(`Service action failed: ${err.message}`);
   } finally {
-    setServiceActionProgress(serviceKeyValue, action, false);
+    setServiceActionProgress(serviceKeyValue, resolvedAction, false);
+    button.dataset.runningAction = "";
     if (serviceItem) {
       serviceItem.classList.remove("action-running");
     }
@@ -5125,6 +5191,8 @@ function setBulkProgress(action, current, total, currentTarget = "") {
     label = "Waking";
   } else if (action === "restore") {
     label = "Restoring";
+  } else if (action === "hard_restart") {
+    label = "Hard restarting";
   }
   const targetText = currentTarget ? ` • ${currentTarget}` : "";
   bulkProgressText.textContent = `${label} ${current}/${total}${targetText}`;
@@ -5160,13 +5228,15 @@ function updateBulkBackupAvailability() {
   }
 }
 
-async function runBulkAction(action) {
+async function runBulkAction(action, event) {
   const selected = getSelectedProjectEntries();
   if (!selected.length) {
     alert("Select one or more projects first.");
     return;
   }
-  if (action === "backup" && !state.backupTargetsAvailable) {
+  const resolvedAction =
+    action === "restart" && event?.shiftKey ? "hard_restart" : action;
+  if (resolvedAction === "backup" && !state.backupTargetsAvailable) {
     alert("No enabled backup targets.");
     return;
   }
@@ -5175,10 +5245,11 @@ async function runBulkAction(action) {
   buttons.forEach((btn) => {
     btn.disabled = true;
   });
+  const actionLabel = formatActionLabel(resolvedAction);
   if (stateStatus) {
-    stateStatus.textContent = `Running ${action} on ${selected.length} projects...`;
+    stateStatus.textContent = `Running ${actionLabel} on ${selected.length} projects...`;
   }
-  setBulkProgress(action, 0, selected.length);
+  setBulkProgress(resolvedAction, 0, selected.length);
 
   const failures = [];
   let completed = 0;
@@ -5194,17 +5265,17 @@ async function runBulkAction(action) {
       row.classList.add("working");
     }
     let entryFailed = false;
-    if (["start", "stop", "restart", "update", "backup"].includes(action)) {
-      setActionProgress(entry.key, action, true);
+    if (["start", "stop", "restart", "hard_restart", "update", "backup"].includes(resolvedAction)) {
+      setActionProgress(entry.key, resolvedAction, true);
       const actionBtn = row?.querySelector(
-        `.project-action[data-action="${action}"]`
+        `.project-action[data-action="${actionForButton}"]`
       );
       if (actionBtn) {
         setActionRunning(actionBtn, true);
       }
     }
     try {
-      if (action === "backup") {
+      if (resolvedAction === "backup") {
         state.backupCancelled.delete(entry.key);
         if (row) {
           const cancelledBadge = row.querySelector(".badge.cancelled");
@@ -5243,7 +5314,7 @@ async function runBulkAction(action) {
         });
       } else {
         await api.post(
-          `/hosts/${entry.hostId}/projects/${entry.projectName}/${action}`
+          `/hosts/${entry.hostId}/projects/${entry.projectName}/${resolvedAction}`
         );
       }
     } catch (err) {
@@ -5251,15 +5322,16 @@ async function runBulkAction(action) {
       failures.push(`${entry.hostId}/${entry.projectName}: ${err.message}`);
     }
     completed += 1;
-    if (action === "backup") {
+    if (resolvedAction === "backup") {
       setBulkProgress("backup", completed, selected.length, currentTarget);
     } else {
-      setBulkProgress(action, completed, selected.length, currentTarget);
+      setBulkProgress(resolvedAction, completed, selected.length, currentTarget);
     }
-    if (["start", "stop", "restart", "update", "backup"].includes(action)) {
-      setActionProgress(entry.key, action, false);
+    const actionForButton = resolvedAction === "hard_restart" ? "restart" : resolvedAction;
+    if (["start", "stop", "restart", "hard_restart", "update", "backup"].includes(resolvedAction)) {
+      setActionProgress(entry.key, resolvedAction, false);
       const actionBtn = row?.querySelector(
-        `.project-action[data-action="${action}"]`
+        `.project-action[data-action="${actionForButton}"]`
       );
       if (actionBtn) {
         setActionRunning(actionBtn, false);
@@ -5270,7 +5342,7 @@ async function runBulkAction(action) {
     }
   }
 
-  if (action === "update") {
+  if (resolvedAction === "update") {
     await loadState();
   } else {
     const hostsToRefresh = Array.from(new Set(selected.map((entry) => entry.hostId)));
@@ -5279,11 +5351,12 @@ async function runBulkAction(action) {
   buttons.forEach((btn) => {
     btn.disabled = false;
   });
-  setBulkProgress(action, 0, 0);
+  setBulkProgress(resolvedAction, 0, 0);
 
+  const summaryAction = formatActionLabel(resolvedAction);
   const summaryMessage = failures.length
-    ? `Bulk ${action} complete with errors`
-    : `Bulk ${action} complete`;
+    ? `Bulk ${summaryAction} complete with errors`
+    : `Bulk ${summaryAction} complete`;
   showToast(summaryMessage, failures.length ? "error" : "success");
 
   if (failures.length) {
@@ -5883,6 +5956,9 @@ logsTailInput.addEventListener("keydown", (event) => {
 logsShowStdout.addEventListener("change", updateLogsFilter);
 logsShowStderr.addEventListener("change", updateLogsFilter);
 document.addEventListener("keydown", handleFindShortcut);
+document.addEventListener("keydown", handleHardRestartModifier);
+document.addEventListener("keyup", handleHardRestartModifier);
+window.addEventListener("blur", () => setHardRestartActive(false));
 if (projectSelectToggle) {
   projectSelectToggle.addEventListener("change", () => {
     if (projectSelectToggle.checked) {
@@ -5976,10 +6052,10 @@ if (clearProjectFiltersBtn) {
   clearProjectFiltersBtn.addEventListener("click", clearProjectFilters);
 }
 document.querySelectorAll(".bulk-action").forEach((button) => {
-  button.addEventListener("click", () => {
+  button.addEventListener("click", (event) => {
     const action = button.dataset.bulkAction;
     if (action) {
-      runBulkAction(action);
+      runBulkAction(action, event);
     }
   });
 });

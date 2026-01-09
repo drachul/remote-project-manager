@@ -761,6 +761,32 @@ def restart_project_cancelable(host: HostConfig, project: str, stop_event) -> SS
     return _run_compose_cancelable(host, project, ["restart"], stop_event)
 
 
+def hard_restart_project(host: HostConfig, project: str) -> str:
+    down_result = _run_compose(host, project, ["down"])
+    up_result = _run_compose(host, project, ["up", "-d"])
+    outputs = [
+        down_result.stdout,
+        down_result.stderr,
+        up_result.stdout,
+        up_result.stderr,
+    ]
+    return "\n".join(output for output in outputs if output).strip()
+
+
+def hard_restart_project_cancelable(host: HostConfig, project: str, stop_event) -> str:
+    down_result = _run_compose_cancelable(host, project, ["down"], stop_event)
+    if stop_event.is_set():
+        raise ComposeCancelled("Hard restart cancelled")
+    up_result = _run_compose_cancelable(host, project, ["up", "-d"], stop_event)
+    outputs = [
+        down_result.stdout,
+        down_result.stderr,
+        up_result.stdout,
+        up_result.stderr,
+    ]
+    return "\n".join(output for output in outputs if output).strip()
+
+
 def start_service(host: HostConfig, project: str, service: str) -> SSHResult:
     return _run_compose(host, project, ["start", service])
 
@@ -787,6 +813,15 @@ def restart_service_cancelable(
     return _run_compose_cancelable(host, project, ["restart", service], stop_event)
 
 
+def hard_restart_service_cancelable(
+    host: HostConfig, project: str, service: str, stop_event
+) -> SSHResult:
+    _run_compose_cancelable(host, project, ["stop", service], stop_event)
+    if stop_event.is_set():
+        raise ComposeCancelled("Hard restart cancelled")
+    return _run_compose_cancelable(host, project, ["up", "-d", service], stop_event)
+
+
 def run_service_action_cancelable(
     host: HostConfig, project: str, service: str, action: str, stop_event
 ) -> SSHResult:
@@ -797,6 +832,8 @@ def run_service_action_cancelable(
         return stop_service_cancelable(host, project, service, stop_event)
     if action == "restart":
         return restart_service_cancelable(host, project, service, stop_event)
+    if action == "hard_restart":
+        return hard_restart_service_cancelable(host, project, service, stop_event)
     raise ComposeError(f"Unsupported service action: {action}")
 
 def backup_project(
@@ -1736,6 +1773,9 @@ def run_project_action_cancelable(
     if action == "restart":
         result = restart_project_cancelable(host, project, stop_event)
         return None, result.stdout
+    if action == "hard_restart":
+        output = hard_restart_project_cancelable(host, project, stop_event)
+        return None, output
     if action == "update":
         updates_applied, output = apply_updates_cancelable(host, project, stop_event)
         return updates_applied, output
