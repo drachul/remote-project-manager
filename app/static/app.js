@@ -1110,7 +1110,7 @@ function renderScheduleSummary() {
     const row = document.createElement("tr");
     row.className = "empty";
     const cell = document.createElement("td");
-    cell.colSpan = 5;
+    cell.colSpan = 6;
     cell.textContent = "No schedule data available.";
     row.appendChild(cell);
     scheduleSummaryBody.appendChild(row);
@@ -1138,13 +1138,32 @@ function renderScheduleSummary() {
     });
 
     const nameCell = document.createElement("td");
-    nameCell.textContent = entry.name === "global" ? "global" : entry.name;
+    if (entry.name === "global") {
+      nameCell.textContent = "global";
+    } else {
+      nameCell.textContent = getProjectDisplayName(entry.host_id || "", entry.name);
+    }
     if (entry.host_id) {
       nameCell.title = entry.host_id;
     }
 
     const lastCell = document.createElement("td");
     lastCell.textContent = formatScheduleTimestamp(entry.last_run);
+
+    const statusCell = document.createElement("td");
+    if (!entry.last_run) {
+      statusCell.textContent = "never";
+    } else if (entry.last_success === true) {
+      statusCell.textContent = "success";
+    } else if (entry.last_success === false) {
+      const reason = entry.last_failure || "";
+      statusCell.textContent = reason ? `failed: ${reason}` : "failed";
+      if (reason) {
+        statusCell.title = reason;
+      }
+    } else {
+      statusCell.textContent = "unknown";
+    }
 
     const nextCell = document.createElement("td");
     nextCell.textContent = entry.enabled && entry.next_run ? formatScheduleTimestamp(entry.next_run) : "never";
@@ -1186,6 +1205,7 @@ function renderScheduleSummary() {
 
     row.appendChild(nameCell);
     row.appendChild(lastCell);
+    row.appendChild(statusCell);
     row.appendChild(nextCell);
     row.appendChild(enabledCell);
     row.appendChild(overrideCell);
@@ -1328,7 +1348,7 @@ async function loadScheduleSummary(preferredKey) {
   if (!scheduleSummaryBody) {
     return { ok: false, error: "Schedule UI unavailable." };
   }
-  scheduleSummaryBody.innerHTML = '<tr class="empty"><td colspan="5">Loading...</td></tr>';
+  scheduleSummaryBody.innerHTML = '<tr class="empty"><td colspan="6">Loading...</td></tr>';
   try {
     const data = await api.get("/backup/schedule/summary");
     scheduleState.summary = data.items || [];
@@ -1344,7 +1364,7 @@ async function loadScheduleSummary(preferredKey) {
     await updateScheduleSelection();
     return { ok: true };
   } catch (err) {
-    scheduleSummaryBody.innerHTML = `<tr class="empty"><td colspan="5">${err.message}</td></tr>`;
+    scheduleSummaryBody.innerHTML = `<tr class="empty"><td colspan="6">${err.message}</td></tr>`;
     return { ok: false, error: err.message };
   }
 }
@@ -2058,7 +2078,7 @@ function openProjectDetailsModal(entry) {
   }
   projectDetailsModal.classList.remove("hidden");
   if (projectDetailsTitle) {
-    projectDetailsTitle.textContent = `${entry.hostId} / ${entry.projectName}`;
+    projectDetailsTitle.textContent = getProjectDisplayName(entry.hostId, entry.projectName);
   }
   if (projectDetailsHost) {
     projectDetailsHost.textContent = entry.hostId || "unknown";
@@ -2074,7 +2094,8 @@ function openProjectDetailsModal(entry) {
     if (entry.lastBackupSuccess === true) {
       successText = "success";
     } else if (entry.lastBackupSuccess === false) {
-      successText = "failed";
+      const failureReason = entry.lastBackupFailure || "";
+      successText = failureReason ? `failed: ${failureReason}` : "failed";
     }
     projectDetailsBackupSuccess.textContent = successText;
   }
@@ -2640,10 +2661,11 @@ function populateRestoreProjects(projects) {
     }
     return;
   }
+  const hostId = restoreHostSelect ? restoreHostSelect.value : "";
   projects.forEach((project) => {
     const option = document.createElement("option");
     option.value = project;
-    option.textContent = project;
+    option.textContent = getProjectDisplayName(hostId, project);
     restoreProjectSelect.appendChild(option);
   });
   if (restoreProjectSelect.options.length) {
@@ -2786,7 +2808,7 @@ async function runRestore(overwrite = false) {
   closeAllActionMenus();
   renderProjectList();
   setBulkProgress("restore", 0, projects.length, hostId);
-  setRestoreStatus(`Restoring ${projects.join(", ")}...`);
+  setRestoreStatus(`Restoring ${projects.map((project) => getProjectDisplayName(hostId, project)).join(", ")}...`);
   try {
     const results = [];
     let completed = 0;
@@ -2824,7 +2846,7 @@ async function runRestore(overwrite = false) {
     let detail = "";
     if (failures.length) {
       detail = failures
-        .map((entry) => `${entry.project || "unknown"}: ${entry.output}`)
+        .map((entry) => `${getProjectDisplayName(hostId, entry.project || "unknown")}: ${entry.output}`)
         .join(" | ");
     }
     const message = detail ? `${summary} ${detail}` : summary;
@@ -3057,7 +3079,7 @@ async function submitDeleteProject() {
         deleteProjectState.projectName
       )}`
     );
-    showToast(`${deleteProjectState.projectName}: project deleted`);
+    showToast(`${getProjectDisplayName(deleteProjectState.hostId, deleteProjectState.projectName)}: project deleted`);
     await loadHosts();
     updateProjectFilterIndicators();
     await loadState();
@@ -3149,7 +3171,7 @@ async function submitCreateProject() {
     createProjectStatus.textContent = "Project created.";
     createProjectStatus.classList.add("success");
     setCreateProgress("Project created.", 100);
-    showToast(`${projectName}: project created`);
+    showToast(`${getProjectDisplayName(hostId, projectName)}: project created`);
     await loadHosts();
     updateProjectFilterIndicators();
     await loadState();
@@ -3219,12 +3241,16 @@ function buildHostConfigEntry(host, isNew) {
   const addressInput = entry.querySelector(".host-address");
   const userInput = entry.querySelector(".host-user");
   const portInput = entry.querySelector(".host-port");
+  const apiInput = entry.querySelector(".host-api-version");
   const keyInput = entry.querySelector(".host-key");
   idInput.value = host?.id || "";
   rootInput.value = host?.project_root || "";
   addressInput.value = host?.ssh_address || "";
   userInput.value = host?.ssh_username || "";
   portInput.value = host?.ssh_port ?? 22;
+  if (apiInput) {
+    apiInput.value = host?.docker_api_version || "";
+  }
   keyInput.value = host?.ssh_key || "";
   if (!isNew) {
     idInput.disabled = true;
@@ -3297,6 +3323,7 @@ function readHostConfig(entry) {
     ssh_username: entry.querySelector(".host-user").value.trim(),
     ssh_key: entry.querySelector(".host-key").value.trim(),
     ssh_port: Number.parseInt(entry.querySelector(".host-port").value, 10) || 22,
+    docker_api_version: entry.querySelector(".host-api-version")?.value.trim() || "",
   };
 }
 
@@ -3818,10 +3845,31 @@ function getActiveHostIds() {
   return state.hosts.map((host) => host.host_id);
 }
 
+function buildProjectNameCounts() {
+  const counts = new Map();
+  state.hosts.forEach((host) => {
+    const projectPaths = host.project_paths || {};
+    const projectNames = host.projects || Object.keys(projectPaths);
+    projectNames.forEach((projectName) => {
+      counts.set(projectName, (counts.get(projectName) || 0) + 1);
+    });
+  });
+  return counts;
+}
+
+function getProjectDisplayName(hostId, projectName) {
+  const counts = buildProjectNameCounts();
+  if (hostId && (counts.get(projectName) || 0) > 1) {
+    return `${projectName} [${hostId}]`;
+  }
+  return projectName;
+}
+
 
 function buildProjectEntries() {
   const stateByHost = getStateByHost();
   const activeHostIds = new Set(getActiveHostIds());
+  const nameCounts = buildProjectNameCounts();
   const entries = [];
 
   state.hosts.forEach((host) => {
@@ -3851,10 +3899,16 @@ function buildProjectEntries() {
         (host.backup_last_message ? host.backup_last_message[projectName] : undefined) ??
         stateProject?.last_backup_message ??
         null;
+      const lastBackupFailure =
+        (host.backup_last_failure ? host.backup_last_failure[projectName] : undefined) ??
+        stateProject?.last_backup_failure ??
+        null;
+      const displayName = getProjectDisplayName(host.host_id, projectName);
       entries.push({
         key: `${host.host_id}::${projectName}`,
         hostId: host.host_id,
         projectName,
+        displayName,
         path: projectPath,
         status: stateProject?.overall_status,
         updatesAvailable: stateProject?.updates_available,
@@ -3864,6 +3918,7 @@ function buildProjectEntries() {
         lastBackupAt,
         lastBackupSuccess,
         lastBackupMessage,
+        lastBackupFailure,
         services,
         serviceCount: services.length,
       });
@@ -3908,7 +3963,8 @@ function applyProjectFilters(entries) {
   const updatesFilter = state.projectFilters.updates || "all";
   return entries.filter((entry) => {
     if (query) {
-      if (!entry.projectName.toLowerCase().includes(query)) {
+      const nameValue = (entry.displayName || entry.projectName).toLowerCase();
+      if (!nameValue.includes(query)) {
         return false;
       }
     }
@@ -4270,7 +4326,7 @@ function renderProjectList() {
     });
 
     const nameCell = row.querySelector(".project-name");
-    nameCell.textContent = entry.projectName;
+    nameCell.textContent = entry.displayName || entry.projectName;
     if (restoreLocked) {
       const badge = document.createElement("span");
       badge.className = "restore-badge";
@@ -5058,7 +5114,7 @@ async function runProjectAction(button, hostId, projectName, action) {
       completionMessage = result?.message || `${label} complete`;
       shouldRefresh = true;
     }
-    showToast(`${projectName}: ${completionMessage}`);
+    showToast(`${getProjectDisplayName(hostId, projectName)}: ${completionMessage}`);
   } catch (err) {
     alert(`Action failed: ${err.message}`);
   } finally {
@@ -5256,7 +5312,7 @@ async function runBulkAction(action, event) {
   const rows = document.querySelectorAll(".list-row.project-row");
   rows.forEach((row) => row.classList.remove("working"));
   for (const entry of selected) {
-    const currentTarget = `${entry.hostId}/${entry.projectName}`;
+    const currentTarget = getProjectDisplayName(entry.hostId, entry.projectName);
     const row = document.querySelector(`[data-project-key="${entry.key}"]`);
     document
       .querySelectorAll(".list-row.project-row.working")
@@ -5319,7 +5375,7 @@ async function runBulkAction(action, event) {
       }
     } catch (err) {
       entryFailed = true;
-      failures.push(`${entry.hostId}/${entry.projectName}: ${err.message}`);
+      failures.push(`${getProjectDisplayName(entry.hostId, entry.projectName)}: ${err.message}`);
     }
     completed += 1;
     if (resolvedAction === "backup") {

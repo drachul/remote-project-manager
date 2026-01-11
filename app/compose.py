@@ -1,62 +1,58 @@
+import contextlib
 import json
 import logging
 import os
+import queue
 import re
 import shlex
 import subprocess
+import tempfile
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
-
 from .config import BackupConfig, HostConfig
+from .docker_context import context_name, docker_env
 from .ssh import (
-    SSHCancelled,
     SSHError,
     SSHResult,
     read_remote_file,
     run_ssh_command,
-    run_ssh_command_cancelable,
     run_ssh_command_password,
     write_remote_file,
 )
 
-
 class ComposeError(RuntimeError):
     pass
 
-
 class ComposeCancelled(RuntimeError):
     pass
-
-
 COMPOSE_FILENAMES = (
     "compose.yaml",
     "compose.yml",
     "docker-compose.yml",
     "docker-compose.yaml",
 )
-
 UPDATE_CHECKS_ENABLED = os.getenv("UPDATE_CHECKS_ENABLED", "true").lower() in (
     "1",
     "true",
     "yes",
     "on",
 )
-
 _SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _REGISTRY_AUTH_PARAM_RE = re.compile(r'(\w+)="([^"]*)"')
+_API_TOO_NEW_RE = re.compile(r"Maximum supported API version is ([0-9.]+)")
 logger = logging.getLogger("rpm")
-
 
 def _redact_headers(headers: Dict[str, str]) -> Dict[str, str]:
     return {
         key: ("<redacted>" if key.lower() == "authorization" else value)
         for key, value in headers.items()
     }
-
 
 def _sanitize_service_name(value: Optional[str]) -> str:
     if not value:
@@ -65,21 +61,17 @@ def _sanitize_service_name(value: Optional[str]) -> str:
     normalized = normalized.strip("-._")
     return normalized or "app"
 
-
 def _yaml_quote(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
     return f"\"{escaped}\""
-
 
 def _yaml_key(value: str) -> str:
     if _SAFE_KEY_RE.match(value):
         return value
     return _yaml_quote(value)
 
-
 def _yaml_inline_list(values: List[str]) -> str:
     return f"[{', '.join(_yaml_key(value) for value in values)}]"
-
 
 def _append_yaml_list(lines: List[str], key: str, values: List[str]) -> None:
     if not values:
@@ -88,14 +80,12 @@ def _append_yaml_list(lines: List[str], key: str, values: List[str]) -> None:
     for item in values:
         lines.append(f"      - {_yaml_quote(item)}")
 
-
 def _append_yaml_mapping(lines: List[str], key: str, values: Dict[str, str]) -> None:
     if not values:
         return
     lines.append(f"    {key}:")
     for map_key, map_value in values.items():
         lines.append(f"      {_yaml_key(map_key)}: {_yaml_quote(map_value)}")
-
 
 def _parse_gpus(value: str) -> Dict[str, object]:
     value = value.strip()
@@ -132,7 +122,6 @@ def _parse_gpus(value: str) -> Dict[str, object]:
         params["capabilities"] = [capabilities]
     return params
 
-
 def _consume_value(tokens: List[str], index: int, option: str, allow_concat: bool = False) -> Tuple[Optional[str], int]:
     token = tokens[index]
     if token == option:
@@ -144,7 +133,6 @@ def _consume_value(tokens: List[str], index: int, option: str, allow_concat: boo
     if allow_concat and token.startswith(option) and len(token) > len(option):
         return token[len(option) :], 1
     return None, 0
-
 
 def _parse_mount(value: str) -> Tuple[Optional[str], Optional[str]]:
     params: Dict[str, str] = {}
@@ -171,7 +159,6 @@ def _parse_mount(value: str) -> Tuple[Optional[str], Optional[str]]:
         volume = f"{volume}:ro"
     return volume, None
 
-
 def docker_run_to_compose(command: str, service_name: Optional[str] = None) -> Tuple[str, str]:
     tokens = shlex.split(command)
     if not tokens:
@@ -184,10 +171,8 @@ def docker_run_to_compose(command: str, service_name: Optional[str] = None) -> T
             tokens = tokens[1:]
     elif tokens[0] == "run":
         tokens = tokens[1:]
-
     if not tokens:
         raise ComposeError("Docker run command is missing an image.")
-
     image: Optional[str] = None
     container_name: Optional[str] = None
     ports: List[str] = []
@@ -216,7 +201,6 @@ def docker_run_to_compose(command: str, service_name: Optional[str] = None) -> T
     privileged = False
     tty = False
     stdin_open = False
-
     index = 0
     while index < len(tokens):
         token = tokens[index]
@@ -228,7 +212,6 @@ def docker_run_to_compose(command: str, service_name: Optional[str] = None) -> T
             else:
                 command_args = tokens[index:]
             break
-
         if image is None and token.startswith("-"):
             if token in ("-it", "-ti"):
                 tty = True
@@ -408,19 +391,15 @@ def docker_run_to_compose(command: str, service_name: Optional[str] = None) -> T
                 continue
             index += 1
             continue
-
         if image is None:
             image = token
             command_args = tokens[index + 1 :]
             break
         command_args = tokens[index:]
         break
-
     if image is None:
         raise ComposeError("Docker run command is missing an image.")
-
     service = _sanitize_service_name(service_name or container_name)
-
     lines = ["services:", f"  {service}:"]
     lines.append(f"    image: {_yaml_quote(image)}")
     if platform:
@@ -450,7 +429,6 @@ def docker_run_to_compose(command: str, service_name: Optional[str] = None) -> T
     if gpu_request:
         driver = gpu_request.get("driver") or "nvidia"
         lines.append(f"    runtime: {_yaml_quote(str(driver))}")
-
     if cpus or gpu_request:
         lines.append("    deploy:")
         lines.append("      resources:")
@@ -506,33 +484,321 @@ def docker_run_to_compose(command: str, service_name: Optional[str] = None) -> T
         lines.append("    tty: true")
     if stdin_open:
         lines.append("    stdin_open: true")
-
     if network and network not in ("host", "bridge", "none"):
         lines.append("networks:")
         lines.append(f"  {_yaml_key(network)}:")
         lines.append("    external: true")
-
     return "\n".join(lines) + "\n", service
-
 
 def _project_dir(host: HostConfig, project: str) -> str:
     return f"{host.project_root.rstrip('/')}/{project}"
 
+def _require_host_id(host: HostConfig) -> str:
+    host_id = getattr(host, "host_id", None)
+    if not host_id:
+        raise ComposeError("Host id is required for docker context")
+    return host_id
 
-def _compose_command(project_dir: str, args: List[str]) -> str:
-    project_q = shlex.quote(project_dir)
-    args_q = " ".join(shlex.quote(arg) for arg in args)
-    return f"cd {project_q} && docker compose {args_q}"
+def _docker_context(host: HostConfig) -> str:
+    return context_name(_require_host_id(host))
 
+def _extract_api_version(message: str) -> Optional[str]:
+    if not message:
+        return None
+    match = _API_TOO_NEW_RE.search(message)
+    if match:
+        return match.group(1)
+    return None
 
-def _run_compose(host: HostConfig, project: str, args: List[str], timeout: int = 120) -> SSHResult:
-    command = _compose_command(_project_dir(host, project), args)
-    result = run_ssh_command(host, command, timeout=timeout)
+def _docker_env(host: HostConfig) -> Dict[str, str]:
+    host_id = _require_host_id(host)
+    return docker_env(host_id, host)
+
+def _terminate_process(process: subprocess.Popen) -> None:
+    process.terminate()
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        process.kill()
+
+def _run_docker_with_env(
+    host: HostConfig,
+    args: List[str],
+    env: Dict[str, str],
+    timeout: int,
+) -> SSHResult:
+    command = ["docker", "--context", _docker_context(host)] + args
+    command_str = " ".join(shlex.quote(arg) for arg in command)
+    logger.debug(
+        "Docker exec host_id=%s command=%s",
+        getattr(host, "host_id", None),
+        command_str,
+    )
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise ComposeError("docker CLI not available") from exc
+    return SSHResult(
+        command=command_str,
+        exit_code=result.returncode,
+        stdout=(result.stdout or "").strip(),
+        stderr=(result.stderr or "").strip(),
+    )
+
+def _run_docker(host: HostConfig, args: List[str], timeout: int = 120) -> SSHResult:
+    env = _docker_env(host)
+    result = _run_docker_with_env(host, args, env, timeout)
+    if result.exit_code != 0:
+        max_version = _extract_api_version(result.stderr)
+        if not max_version:
+            max_version = _extract_api_version(result.stdout)
+        if max_version:
+            logger.debug(
+                "Docker API fallback host_id=%s api_version=%s",
+                getattr(host, "host_id", None),
+                max_version,
+            )
+            env_retry = env.copy()
+            env_retry["DOCKER_API_VERSION"] = max_version
+            result = _run_docker_with_env(host, args, env_retry, timeout)
+    return result
+
+def _run_docker_cancelable(
+    host: HostConfig, args: List[str], stop_event, timeout: int = 120
+) -> SSHResult:
+    if stop_event.is_set():
+        raise ComposeCancelled("Compose action cancelled")
+    env = _docker_env(host)
+    command = ["docker", "--context", _docker_context(host)] + args
+    command_str = " ".join(shlex.quote(arg) for arg in command)
+    logger.debug(
+        "Docker exec host_id=%s command=%s",
+        getattr(host, "host_id", None),
+        command_str,
+    )
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            bufsize=1,
+        )
+    except FileNotFoundError as exc:
+        raise ComposeError("docker CLI not available") from exc
+    stdout_lines: List[str] = []
+    stderr_lines: List[str] = []
+    output_queue: queue.Queue[tuple[str, Optional[str]]] = queue.Queue()
+    def reader(stream, name: str) -> None:
+        for line in iter(stream.readline, ""):
+            output_queue.put((name, line))
+        output_queue.put((name, None))
+        stream.close()
+    threads = [
+        threading.Thread(target=reader, args=(process.stdout, "stdout"), daemon=True),
+        threading.Thread(target=reader, args=(process.stderr, "stderr"), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    done = 0
+    start_time = time.monotonic()
+    while done < 2:
+        if stop_event.is_set():
+            _terminate_process(process)
+            raise ComposeCancelled("Compose action cancelled")
+        if timeout and time.monotonic() - start_time > timeout:
+            _terminate_process(process)
+            raise ComposeError("Compose command timed out")
+        try:
+            name, line = output_queue.get(timeout=0.1)
+        except queue.Empty:
+            if process.poll() is not None and done >= 2:
+                break
+            continue
+        if line is None:
+            done += 1
+            continue
+        if name == "stdout":
+            stdout_lines.append(line)
+        else:
+            stderr_lines.append(line)
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        _terminate_process(process)
+    result = SSHResult(
+        command=command_str,
+        exit_code=process.returncode or 0,
+        stdout="".join(stdout_lines).strip(),
+        stderr="".join(stderr_lines).strip(),
+    )
+    if result.exit_code != 0:
+        max_version = _extract_api_version(result.stderr)
+        if not max_version:
+            max_version = _extract_api_version(result.stdout)
+        if max_version:
+            if stop_event.is_set():
+                raise ComposeCancelled("Compose action cancelled")
+            logger.debug(
+                "Docker API fallback host_id=%s api_version=%s",
+                getattr(host, "host_id", None),
+                max_version,
+            )
+            env_retry = env.copy()
+            env_retry["DOCKER_API_VERSION"] = max_version
+            return _run_docker_with_env(host, args, env_retry, timeout)
+    return result
+
+def _stream_docker_command(
+    host: HostConfig,
+    args: List[str],
+    stop_event,
+    timeout: int = 300,
+    include_exit: bool = False,
+) -> Iterator[Tuple[str, str]]:
+    env = _docker_env(host)
+    command = ["docker", "--context", _docker_context(host)] + args
+    command_str = " ".join(shlex.quote(arg) for arg in command)
+    logger.debug(
+        "Docker stream host_id=%s command=%s",
+        getattr(host, "host_id", None),
+        command_str,
+    )
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            bufsize=1,
+        )
+    except FileNotFoundError as exc:
+        raise ComposeError("docker CLI not available") from exc
+    output_queue: queue.Queue[tuple[str, Optional[str]]] = queue.Queue()
+    def reader(stream, name: str) -> None:
+        for line in iter(stream.readline, ""):
+            output_queue.put((name, line))
+        output_queue.put((name, None))
+        stream.close()
+    threads = [
+        threading.Thread(target=reader, args=(process.stdout, "stdout"), daemon=True),
+        threading.Thread(target=reader, args=(process.stderr, "stderr"), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    done = 0
+    start_time = time.monotonic()
+    while done < 2:
+        if stop_event.is_set():
+            _terminate_process(process)
+            break
+        if timeout and time.monotonic() - start_time > timeout:
+            _terminate_process(process)
+            break
+        try:
+            name, line = output_queue.get(timeout=0.1)
+        except queue.Empty:
+            if process.poll() is not None and done >= 2:
+                break
+            continue
+        if line is None:
+            done += 1
+            continue
+        yield (name, line.rstrip("\n"))
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        _terminate_process(process)
+    if include_exit and not stop_event.is_set():
+        exit_code = process.returncode
+        if exit_code is None:
+            try:
+                exit_code = process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                exit_code = 0
+        yield ("exit", str(exit_code))
+@contextlib.contextmanager
+def _compose_tempfile(
+    host: HostConfig, project: str, content: Optional[str] = None
+) -> Iterator[str]:
+    if content is None:
+        _, content = read_compose_file(host, project)
+    fd, path = tempfile.mkstemp(prefix="rpm-compose-", suffix=".yml")
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(content)
+        yield path
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+def _compose_args(project_dir: str, project: str, compose_path: str) -> List[str]:
+    return [
+        "compose",
+        "-f",
+        compose_path,
+        "--project-name",
+        project,
+        "--project-directory",
+        project_dir,
+    ]
+
+def _sanitize_compose_args(args: List[str]) -> List[str]:
+    cleaned: List[str] = []
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in ("-f", "--file", "--project-directory", "--project-name", "-p"):
+            skip_next = True
+            continue
+        if arg.startswith("-f") and len(arg) > 2:
+            continue
+        if arg.startswith(("--file=", "--project-directory=", "--project-name=", "-p=")):
+            continue
+        cleaned.append(arg)
+    return cleaned
+
+def _run_compose_with_content(
+    host: HostConfig,
+    project_dir: str,
+    project_name: str,
+    args: List[str],
+    content: Optional[str] = None,
+    timeout: int = 120,
+    stop_event=None,
+) -> SSHResult:
+    with _compose_tempfile(host, project_name, content) as compose_path:
+        compose_args = _compose_args(project_dir, project_name, compose_path) + args
+        if stop_event is None:
+            result = _run_docker(host, compose_args, timeout=timeout)
+        else:
+            result = _run_docker_cancelable(host, compose_args, stop_event, timeout=timeout)
     if result.exit_code != 0:
         message = result.stderr or result.stdout or "Unknown error"
         raise ComposeError(message)
     return result
 
+def _run_compose(host: HostConfig, project: str, args: List[str], timeout: int = 120) -> SSHResult:
+    return _run_compose_with_content(
+        host,
+        _project_dir(host, project),
+        project,
+        args,
+        timeout=timeout,
+    )
 
 def _run_compose_cancelable(
     host: HostConfig,
@@ -543,16 +809,72 @@ def _run_compose_cancelable(
 ) -> SSHResult:
     if stop_event.is_set():
         raise ComposeCancelled("Compose action cancelled")
-    command = _compose_command(_project_dir(host, project), args)
     try:
-        result = run_ssh_command_cancelable(host, command, stop_event, timeout=timeout)
-    except SSHCancelled as exc:
-        raise ComposeCancelled(str(exc)) from exc
-    if result.exit_code != 0:
-        message = result.stderr or result.stdout or "Unknown error"
-        raise ComposeError(message)
-    return result
+        return _run_compose_with_content(
+            host,
+            _project_dir(host, project),
+            project,
+            args,
+            timeout=timeout,
+            stop_event=stop_event,
+        )
+    except ComposeCancelled:
+        raise
 
+def _stream_compose_with_content(
+    host: HostConfig,
+    project_dir: str,
+    project_name: str,
+    args: List[str],
+    stop_event,
+    timeout: int = 300,
+    include_exit: bool = False,
+) -> Iterator[Tuple[str, str]]:
+    with _compose_tempfile(host, project_name, None) as compose_path:
+        compose_args = _compose_args(project_dir, project_name, compose_path) + args
+        yield from _stream_docker_command(
+            host,
+            compose_args,
+            stop_event,
+            timeout=timeout,
+            include_exit=include_exit,
+        )
+
+def stream_project_logs(
+    host: HostConfig,
+    project: str,
+    tail: int,
+    service: Optional[str],
+    stop_event,
+    timeout: int = 300,
+) -> Iterator[Tuple[str, str]]:
+    args = logs_command(host, project, tail=tail, service=service, follow=True)
+    return _stream_compose_with_content(
+        host,
+        _project_dir(host, project),
+        project,
+        args,
+        stop_event,
+        timeout=timeout,
+    )
+
+def stream_compose_command(
+    host: HostConfig,
+    project: str,
+    command: str,
+    stop_event,
+    timeout: int = 300,
+) -> Iterator[Tuple[str, str]]:
+    args = _sanitize_compose_args(_parse_compose_command(command))
+    return _stream_compose_with_content(
+        host,
+        _project_dir(host, project),
+        project,
+        args,
+        stop_event,
+        timeout=timeout,
+        include_exit=True,
+    )
 
 def _parse_compose_command(command: str) -> List[str]:
     if not command or not command.strip():
@@ -572,20 +894,16 @@ def _parse_compose_command(command: str) -> List[str]:
         raise ComposeError("Compose arguments are required")
     return args
 
-
 def run_compose_command(
     host: HostConfig, project: str, command: str, timeout: int = 300
 ) -> SSHResult:
-    command_str = compose_command_string(host, project, command)
-    return run_ssh_command(host, command_str, timeout=timeout)
-
+    args = _sanitize_compose_args(_parse_compose_command(command))
+    return _run_compose(host, project, args, timeout=timeout)
 
 def compose_command_string(host: HostConfig, project: str, command: str) -> str:
-    args = _parse_compose_command(command)
-    return _compose_command(_project_dir(host, project), args)
-
-
-
+    _ = (host, project)
+    args = _sanitize_compose_args(_parse_compose_command(command))
+    return "docker compose " + " ".join(shlex.quote(arg) for arg in args)
 
 def list_projects(host: HostConfig) -> List[str]:
     root_q = shlex.quote(host.project_root)
@@ -601,7 +919,6 @@ def list_projects(host: HostConfig) -> List[str]:
     if not result.stdout:
         return []
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
-
 
 def get_compose_file_path(host: HostConfig, project: str) -> str:
     project_dir = _project_dir(host, project)
@@ -622,7 +939,6 @@ def get_compose_file_path(host: HostConfig, project: str) -> str:
         raise ComposeError("Compose file not found")
     return f"{project_dir}/{filename}"
 
-
 def read_compose_file(host: HostConfig, project: str) -> Tuple[str, str]:
     path = get_compose_file_path(host, project)
     content = read_remote_file(host, path)
@@ -635,44 +951,25 @@ def write_compose_file(host: HostConfig, project: str, content: str) -> str:
     return path
 
 
-def validate_compose_content(host: HostConfig, project: str, content: str) -> Tuple[bool, str]:
+def validate_compose_content(
+    host: HostConfig, project: str, content: str
+) -> Tuple[bool, str]:
     project_dir = _project_dir(host, project)
-    temp_name = f".compose-manager-{uuid.uuid4().hex}.yaml"
-    temp_path = f"{project_dir}/{temp_name}"
-    cleanup_command = f"cd {shlex.quote(project_dir)} && rm -f {shlex.quote(temp_name)}"
-
-    try:
-        write_remote_file(host, temp_path, content)
-        command = _compose_command(project_dir, ["-f", temp_name, "config"])
-        result = run_ssh_command(host, command, timeout=120)
-        output = "\n".join([result.stdout, result.stderr]).strip()
-        return result.exit_code == 0, output
-    finally:
-        try:
-            run_ssh_command(host, cleanup_command)
-        except SSHError:
-            pass
+    with _compose_tempfile(host, project, content) as compose_path:
+        args = _compose_args(project_dir, project, compose_path) + ["config"]
+        result = _run_docker(host, args, timeout=120)
+    output = "\n".join([result.stdout, result.stderr]).strip()
+    return result.exit_code == 0, output
 
 
 def validate_compose_content_temp(host: HostConfig, content: str) -> Tuple[bool, str]:
-    temp_dir = f"/tmp/compose-manager-{uuid.uuid4().hex}"
-    temp_name = "docker-compose.yml"
-    temp_path = f"{temp_dir}/{temp_name}"
-    mkdir_command = f"mkdir -p {shlex.quote(temp_dir)}"
-    cleanup_command = f"rm -rf {shlex.quote(temp_dir)}"
-
-    try:
-        run_ssh_command(host, mkdir_command)
-        write_remote_file(host, temp_path, content)
-        command = _compose_command(temp_dir, ["-f", temp_name, "config"])
-        result = run_ssh_command(host, command, timeout=120)
-        output = "\n".join([result.stdout, result.stderr]).strip()
-        return result.exit_code == 0, output
-    finally:
-        try:
-            run_ssh_command(host, cleanup_command)
-        except SSHError:
-            pass
+    project_dir = host.project_root.rstrip("/") or "/"
+    project_name = "temp"
+    with _compose_tempfile(host, project_name, content) as compose_path:
+        args = _compose_args(project_dir, project_name, compose_path) + ["config"]
+        result = _run_docker(host, args, timeout=120)
+    output = "\n".join([result.stdout, result.stderr]).strip()
+    return result.exit_code == 0, output
 
 
 def create_project(host: HostConfig, project: str, content: str) -> str:
@@ -697,7 +994,6 @@ def create_project(host: HostConfig, project: str, content: str) -> str:
         raise ComposeError(str(exc)) from exc
     return compose_path
 
-
 def delete_project(host: HostConfig, project: str) -> None:
     project_dir = _project_dir(host, project)
     project_q = shlex.quote(project_dir)
@@ -710,56 +1006,48 @@ def delete_project(host: HostConfig, project: str) -> None:
         message = result.stderr or result.stdout or "Unable to delete project directory"
         raise ComposeError(message)
 
-
 def logs_command(
     host: HostConfig,
     project: str,
     tail: int = 200,
     service: Optional[str] = None,
     follow: bool = False,
-) -> str:
+) -> List[str]:
+    _ = (host, project)
     args = ["logs", "--no-color", "--tail", str(tail)]
     if follow:
         args.append("-f")
     if service:
         args.append(service)
-    return _compose_command(_project_dir(host, project), args)
-
+    return args
 
 def project_logs(
     host: HostConfig, project: str, tail: int = 200, service: Optional[str] = None
 ) -> str:
-    command = logs_command(host, project, tail=tail, service=service, follow=False)
-    result = run_ssh_command(host, command)
+    args = logs_command(host, project, tail=tail, service=service, follow=False)
+    result = _run_compose(host, project, args)
     if result.exit_code != 0:
         message = result.stderr or result.stdout or "Unknown error"
         raise ComposeError(message)
     return result.stdout
 
-
 def start_project(host: HostConfig, project: str) -> SSHResult:
     return _run_compose(host, project, ["up", "-d"])
-
 
 def start_project_cancelable(host: HostConfig, project: str, stop_event) -> SSHResult:
     return _run_compose_cancelable(host, project, ["up", "-d"], stop_event)
 
-
 def stop_project(host: HostConfig, project: str) -> SSHResult:
     return _run_compose(host, project, ["stop"])
-
 
 def stop_project_cancelable(host: HostConfig, project: str, stop_event) -> SSHResult:
     return _run_compose_cancelable(host, project, ["stop"], stop_event)
 
-
 def restart_project(host: HostConfig, project: str) -> SSHResult:
     return _run_compose(host, project, ["restart"])
 
-
 def restart_project_cancelable(host: HostConfig, project: str, stop_event) -> SSHResult:
     return _run_compose_cancelable(host, project, ["restart"], stop_event)
-
 
 def hard_restart_project(host: HostConfig, project: str) -> str:
     down_result = _run_compose(host, project, ["down"])
@@ -771,7 +1059,6 @@ def hard_restart_project(host: HostConfig, project: str) -> str:
         up_result.stderr,
     ]
     return "\n".join(output for output in outputs if output).strip()
-
 
 def hard_restart_project_cancelable(host: HostConfig, project: str, stop_event) -> str:
     down_result = _run_compose_cancelable(host, project, ["down"], stop_event)
@@ -785,7 +1072,6 @@ def hard_restart_project_cancelable(host: HostConfig, project: str, stop_event) 
         up_result.stderr,
     ]
     return "\n".join(output for output in outputs if output).strip()
-
 
 def start_service(host: HostConfig, project: str, service: str) -> SSHResult:
     return _run_compose(host, project, ["start", service])
@@ -847,18 +1133,15 @@ def backup_project(
     output = result.stdout or result.stderr or ""
     return dest, output.strip()
 
-
 def build_backup_command(
     host_id: str, host: HostConfig, project: str, backup: BackupConfig
 ) -> Tuple[str, str]:
     project_dir = _project_dir(host, project)
     dest_base = backup.base_path.rstrip("/")
     dest = f"{dest_base}/{project}"
-
     password_q = shlex.quote(backup.password)
     src_q = shlex.quote(f"{project_dir}/")
     protocol = (backup.protocol or "ssh").lower()
-
     if protocol == "rsync":
         user_prefix = f"{backup.user}@" if backup.user else ""
         dest_url = f"rsync://{user_prefix}{backup.host}/{dest.lstrip('/')}"
@@ -870,7 +1153,6 @@ def build_backup_command(
             f"RSYNC_PASSWORD={password_q} rsync -az --links --delete {src_q} {dest_q}"
         )
         return dest, f"{primary_cmd} || {fallback_cmd}"
-
     user_host = f"{backup.user}@{backup.host}"
     user_host_q = shlex.quote(user_host)
     dest_q = shlex.quote(dest)
@@ -886,15 +1168,11 @@ def build_backup_command(
     )
     return dest, f"{mkdir_cmd} && {rsync_cmd}"
 
-
-
-
 def project_exists(host: HostConfig, project: str) -> bool:
     project_dir = _project_dir(host, project)
     command = f"test -d {shlex.quote(project_dir)}"
     result = run_ssh_command(host, command, timeout=30)
     return result.exit_code == 0
-
 
 def list_backup_projects(backup: BackupConfig) -> List[str]:
     base_path = backup.base_path.rstrip("/") or "/"
@@ -964,7 +1242,6 @@ def list_backup_projects(backup: BackupConfig) -> List[str]:
     projects = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     return projects
 
-
 def restore_project(
     host_id: str, host: HostConfig, project: str, backup: BackupConfig
 ) -> Tuple[str, str]:
@@ -975,7 +1252,6 @@ def restore_project(
         raise ComposeError(message)
     output = result.stdout or result.stderr or ""
     return dest, output.strip()
-
 
 def build_restore_command(
     host_id: str, host: HostConfig, project: str, backup: BackupConfig
@@ -991,7 +1267,6 @@ def build_restore_command(
     password_q = shlex.quote(backup.password)
     protocol = (backup.protocol or "ssh").lower()
     mkdir_cmd = f"mkdir -p {shlex.quote(project_root)}"
-
     if protocol == "rsync":
         user_prefix = f"{backup.user}@" if backup.user else ""
         src_url = f"rsync://{user_prefix}{backup.host}/{src.lstrip('/')}"
@@ -1001,7 +1276,6 @@ def build_restore_command(
         )
         logger.debug("Restore rsync src=%s dest=%s", src_url, dest_dir)
         return project_dir, f"{mkdir_cmd} && {rsync_cmd}"
-
     user_host = f"{backup.user}@{backup.host}"
     user_host_q = shlex.quote(user_host)
     ssh_opts = f"ssh -p {backup.port} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
@@ -1012,6 +1286,7 @@ def build_restore_command(
     )
     logger.debug("Restore rsync src=%s dest=%s", f"{user_host}:{src}", dest_dir)
     return project_dir, f"{mkdir_cmd} && {rsync_cmd}"
+
 def _parse_ps_output(output: str) -> List[dict]:
     text = output.strip()
     if not text:
@@ -1033,6 +1308,90 @@ def _parse_ps_output(output: str) -> List[dict]:
             continue
     return items
 
+def _parse_label_map(value: str) -> Dict[str, str]:
+    labels: Dict[str, str] = {}
+    if not value:
+        return labels
+    for part in value.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        key, sep, val = part.partition("=")
+        if not sep:
+            continue
+        labels[key] = val
+    return labels
+
+
+def _docker_ps(host: HostConfig, project: str) -> List[dict]:
+    result = _run_docker(
+        host,
+        [
+            "ps",
+            "-a",
+            "--filter",
+            f"label=com.docker.compose.project={project}",
+            "--format",
+            "{{json .}}",
+        ],
+        timeout=60,
+    )
+    if result.exit_code != 0:
+        message = result.stderr or result.stdout or "Docker ps failed"
+        raise ComposeError(message)
+    items = _parse_ps_output(result.stdout)
+    enriched: List[dict] = []
+    for item in items:
+        labels = _parse_label_map(item.get("Labels") or "")
+        service = labels.get("com.docker.compose.service")
+        name = item.get("Names") or item.get("Name") or service or "unknown"
+        status = item.get("Status") or ""
+        state = (item.get("State") or "").lower()
+        if not state:
+            lowered = status.lower()
+            if lowered.startswith("up"):
+                state = "running"
+            elif lowered.startswith("exited"):
+                state = "exited"
+            elif lowered.startswith("created"):
+                state = "created"
+            elif lowered.startswith("paused"):
+                state = "paused"
+            else:
+                state = "unknown"
+        enriched.append(
+            {
+                "ID": item.get("ID"),
+                "Name": name,
+                "Service": service or name,
+                "State": state,
+                "Status": status,
+            }
+        )
+    names = [item["Name"] for item in enriched if item.get("Name")]
+    if names:
+        inspect_result = _run_docker(
+            host,
+            ["inspect", "--format", "{{json .}}"] + names,
+            timeout=60,
+        )
+        if inspect_result.exit_code == 0:
+            inspect_map: Dict[str, dict] = {}
+            for entry in _parse_stats_output(inspect_result.stdout):
+                name = (entry.get("Name") or "").lstrip("/")
+                if name:
+                    inspect_map[name] = entry
+            for item in enriched:
+                entry = inspect_map.get(item.get("Name"))
+                if not entry:
+                    continue
+                state = entry.get("State") or {}
+                status = state.get("Status")
+                if status:
+                    item["State"] = status
+                if "ExitCode" in state:
+                    item["ExitCode"] = state.get("ExitCode")
+    return enriched
 
 
 def _parse_stats_output(output: str) -> List[dict]:
@@ -1049,7 +1408,6 @@ def _parse_stats_output(output: str) -> List[dict]:
         except json.JSONDecodeError:
             continue
     return items
-
 
 def _parse_docker_timestamp(value: Optional[str]) -> Optional[datetime]:
     if not value:
@@ -1079,7 +1437,6 @@ def _parse_docker_timestamp(value: Optional[str]) -> Optional[datetime]:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
 
-
 def _parse_int(value: object) -> Optional[int]:
     if value is None:
         return None
@@ -1087,7 +1444,6 @@ def _parse_int(value: object) -> Optional[int]:
         return int(str(value).strip())
     except (TypeError, ValueError):
         return None
-
 
 def _detect_updates(output: str) -> bool:
     lowered = output.lower()
@@ -1101,12 +1457,8 @@ def _detect_updates(output: str) -> bool:
         return True
     return False
 
-
-
-
 def service_container(host: HostConfig, project: str, service: str) -> str:
-    result = _run_compose(host, project, ["ps", "--all", "--format", "json"])
-    items = _parse_ps_output(result.stdout)
+    items = _docker_ps(host, project)
     if not items:
         raise ComposeError("No containers found")
     service_key = service.lower()
@@ -1116,26 +1468,23 @@ def service_container(host: HostConfig, project: str, service: str) -> str:
     ]
     if not matches:
         raise ComposeError(f"Service not found: {service}")
-
     def is_running(item: dict) -> bool:
         state = (item.get("State") or "").lower()
         status = (item.get("Status") or "").lower()
         return state == "running" or status.startswith("up")
-
     selected = next((item for item in matches if is_running(item)), matches[0])
     name = selected.get("Name") or selected.get("Service")
     if not name:
         raise ComposeError("Service container name unavailable")
     return name
+
 def project_status(host: HostConfig, project: str) -> Tuple[str, List[dict], List[str]]:
-    result = _run_compose(host, project, ["ps", "--all", "--format", "json"])
-    if not result.stdout.strip():
+    items = _docker_ps(host, project)
+    if not items:
         return "down", [], []
-    items = _parse_ps_output(result.stdout)
     containers = []
     running_count = 0
     issues = []
-
     for item in items:
         service = item.get("Service") or None
         name = item.get("Name") or service or "unknown"
@@ -1156,7 +1505,6 @@ def project_status(host: HostConfig, project: str) -> Tuple[str, List[dict], Lis
             running_count += 1
         if exit_code not in (None, 0) or state in ("exited", "dead"):
             issues.append(f"{name} state={state} exit={exit_code}")
-
     if not containers:
         overall = "down"
     elif running_count == len(containers):
@@ -1165,14 +1513,10 @@ def project_status(host: HostConfig, project: str) -> Tuple[str, List[dict], Lis
         overall = "down"
     else:
         overall = "degraded"
-
     return overall, containers, issues
 
-
-
 def project_stats(host: HostConfig, project: str) -> List[dict]:
-    result = _run_compose(host, project, ["ps", "--all", "--format", "json"])
-    items = _parse_ps_output(result.stdout)
+    items = _docker_ps(host, project)
     if not items:
         return []
     entries = []
@@ -1183,11 +1527,11 @@ def project_stats(host: HostConfig, project: str) -> List[dict]:
         container_id = item.get("ID")
         names.append(name)
         entries.append({"name": name, "service": service, "id": container_id})
-
     stats_map: Dict[str, dict] = {}
     if names:
-        stats_cmd = "docker stats --no-stream --format '{{json .}}'"
-        stats_result = run_ssh_command(host, stats_cmd, timeout=60)
+        stats_result = _run_docker(
+            host, ["stats", "--no-stream", "--format", "{{json .}}"], timeout=60
+        )
         if stats_result.exit_code == 0:
             target_names = set(names)
             for entry in _parse_stats_output(stats_result.stdout):
@@ -1201,13 +1545,10 @@ def project_stats(host: HostConfig, project: str) -> List[dict]:
                 project,
                 stats_result.stderr or stats_result.stdout,
             )
-
     inspect_map: Dict[str, dict] = {}
     if names:
-        inspect_cmd = "docker inspect --format '{{json .}}' " + " ".join(
-            shlex.quote(name) for name in names
-        )
-        inspect_result = run_ssh_command(host, inspect_cmd, timeout=60)
+        inspect_args = ["inspect", "--format", "{{json .}}"] + names
+        inspect_result = _run_docker(host, inspect_args, timeout=60)
         if inspect_result.exit_code == 0:
             for entry in _parse_stats_output(inspect_result.stdout):
                 name = (entry.get("Name") or "").lstrip("/")
@@ -1220,7 +1561,6 @@ def project_stats(host: HostConfig, project: str) -> List[dict]:
                 project,
                 inspect_result.stderr or inspect_result.stdout,
             )
-
     now = datetime.now(timezone.utc)
     results = []
     for entry in entries:
@@ -1248,11 +1588,8 @@ def project_stats(host: HostConfig, project: str) -> List[dict]:
         )
     return results
 
-
-
 def project_ports(host: HostConfig, project: str) -> List[dict]:
-    result = _run_compose(host, project, ["ps", "--all", "--format", "json"])
-    items = _parse_ps_output(result.stdout)
+    items = _docker_ps(host, project)
     if not items:
         return []
     name_to_service: Dict[str, str] = {}
@@ -1264,10 +1601,8 @@ def project_ports(host: HostConfig, project: str) -> List[dict]:
         names.append(name)
     if not names:
         return []
-    inspect_cmd = "docker inspect --format '{{json .}}' " + " ".join(
-        shlex.quote(name) for name in names
-    )
-    inspect_result = run_ssh_command(host, inspect_cmd, timeout=60)
+    inspect_args = ["inspect", "--format", "{{json .}}"] + names
+    inspect_result = _run_docker(host, inspect_args, timeout=60)
     if inspect_result.exit_code != 0:
         message = inspect_result.stderr or inspect_result.stdout or "Docker inspect failed"
         raise ComposeError(message)
@@ -1306,7 +1641,6 @@ def project_ports(host: HostConfig, project: str) -> List[dict]:
                 )
     return ports
 
-
 def _compose_config_json(host: HostConfig, project: str) -> dict:
     result = _run_compose(host, project, ["config", "--format", "json"])
     try:
@@ -1314,11 +1648,9 @@ def _compose_config_json(host: HostConfig, project: str) -> dict:
     except json.JSONDecodeError as exc:
         raise ComposeError("Compose config JSON parse failed") from exc
 
-
 def _compose_config_text(host: HostConfig, project: str) -> str:
     result = _run_compose(host, project, ["config"])
     return result.stdout
-
 
 def _extract_images_from_config(config: object) -> List[str]:
     images: List[str] = []
@@ -1340,7 +1672,6 @@ def _extract_images_from_config(config: object) -> List[str]:
         for item in config:
             images.extend(_extract_images_from_config(item))
     return images
-
 
 def list_service_images(host: HostConfig, project: str) -> Dict[str, str]:
     service_images: Dict[str, str] = {}
@@ -1365,7 +1696,6 @@ def list_service_images(host: HostConfig, project: str) -> Dict[str, str]:
         pass
     return service_images
 
-
 def list_project_images(host: HostConfig, project: str) -> List[str]:
     images: List[str] = []
     service_images = list_service_images(host, project)
@@ -1383,18 +1713,16 @@ def list_project_images(host: HostConfig, project: str) -> List[str]:
                     image = stripped.split("image:", 1)[1].strip()
                     if image:
                         images.append(image)
-
     unique = []
     for image in images:
         if image not in unique:
             unique.append(image)
     return unique
 
-
 def _local_repo_digests(host: HostConfig, image: str) -> Tuple[List[str], str]:
-    image_q = shlex.quote(image)
-    command = f"docker image inspect --format '{{{{json .RepoDigests}}}}' {image_q}"
-    result = run_ssh_command(host, command)
+    result = _run_docker(
+        host, ["image", "inspect", "--format", "{{json .RepoDigests}}", image]
+    )
     if result.exit_code != 0:
         message = result.stderr or result.stdout or "Image not found"
         return [], message
@@ -1404,15 +1732,17 @@ def _local_repo_digests(host: HostConfig, image: str) -> Tuple[List[str], str]:
     except json.JSONDecodeError:
         return [], "Failed to parse local image digests"
 
-
 def _local_image_platform(host: HostConfig, image: str) -> Dict[str, Optional[str]]:
-    image_q = shlex.quote(image)
-    command = (
-        "docker image inspect --format "
-        "'{{json .Architecture}}|{{json .Os}}|{{json .Variant}}' "
-        f"{image_q}"
+    result = _run_docker(
+        host,
+        [
+            "image",
+            "inspect",
+            "--format",
+            "{{json .Architecture}}|{{json .Os}}|{{json .Variant}}",
+            image,
+        ],
     )
-    result = run_ssh_command(host, command)
     if result.exit_code != 0:
         return {}
     parts = (result.stdout or "").split("|")
@@ -1425,7 +1755,6 @@ def _local_image_platform(host: HostConfig, image: str) -> Dict[str, Optional[st
     except json.JSONDecodeError:
         return {}
     return {"architecture": architecture, "os": os_name, "variant": variant}
-
 
 def _parse_image_reference(image: str) -> Tuple[str, str, str, bool]:
     name = image
@@ -1455,7 +1784,6 @@ def _parse_image_reference(image: str) -> Tuple[str, str, str, bool]:
         raise ComposeError("Invalid image reference")
     return registry, repository, reference, is_digest
 
-
 def _parse_www_authenticate(value: Optional[str]) -> Dict[str, str]:
     if not value:
         return {}
@@ -1463,7 +1791,6 @@ def _parse_www_authenticate(value: Optional[str]) -> Dict[str, str]:
         return {}
     params = dict(_REGISTRY_AUTH_PARAM_RE.findall(value))
     return params
-
 
 def _fetch_registry_token(auth: Dict[str, str]) -> str:
     realm = auth.get("realm")
@@ -1493,7 +1820,6 @@ def _fetch_registry_token(auth: Dict[str, str]) -> str:
     if not token:
         raise ComposeError("Registry auth token missing")
     return token
-
 
 def _registry_request_json(url: str, headers: Dict[str, str]) -> Tuple[dict, Dict[str, str]]:
     request = Request(url, headers=headers)
@@ -1551,7 +1877,6 @@ def _registry_request_json(url: str, headers: Dict[str, str]) -> Tuple[dict, Dic
     except json.JSONDecodeError as exc:
         raise ComposeError("Registry manifest parse failed") from exc
 
-
 def _remote_manifest(host: HostConfig, image: str) -> dict:
     _ = host
     registry, repository, reference, is_digest = _parse_image_reference(image)
@@ -1577,7 +1902,6 @@ def _remote_manifest(host: HostConfig, image: str) -> dict:
         manifest.setdefault("Descriptor", {})["digest"] = digest
     return manifest
 
-
 def _select_manifest_digest(
     manifest: object,
     platform: Dict[str, Optional[str]],
@@ -1591,14 +1915,12 @@ def _select_manifest_digest(
         return None
     if not isinstance(manifest, dict):
         return None
-
     local_digest_set = set(_digest_list(local_digests or []))
     descriptor = manifest.get("Descriptor") or {}
     descriptor_digest = descriptor.get("digest")
     if descriptor_digest and descriptor_digest in local_digest_set:
         logger.debug("Manifest digest selected via descriptor match: %s", descriptor_digest)
         return descriptor_digest
-
     manifests = manifest.get("manifests")
     if isinstance(manifests, list) and manifests:
         if local_digest_set:
@@ -1629,7 +1951,6 @@ def _select_manifest_digest(
         return digest
     return descriptor_digest
 
-
 def _digest_list(repo_digests: List[str]) -> List[str]:
     digests = []
     for item in repo_digests:
@@ -1639,7 +1960,6 @@ def _digest_list(repo_digests: List[str]) -> List[str]:
             digests.append(item)
     return digests
 
-
 def check_updates(host: HostConfig, project: str) -> Tuple[bool, bool, str, Dict[str, str]]:
     if not UPDATE_CHECKS_ENABLED:
         return False, False, "Update checks are disabled.", {}
@@ -1647,12 +1967,10 @@ def check_updates(host: HostConfig, project: str) -> Tuple[bool, bool, str, Dict
     images = list_project_images(host, project)
     if not images:
         return False, False, "No images found in compose config.", {}
-
     results = []
     errors = []
     updates_available = False
     per_service: Dict[str, str] = {}
-
     image_status: Dict[str, dict] = {}
     for image in images:
         local_digests, local_error = _local_repo_digests(host, image)
@@ -1668,7 +1986,6 @@ def check_updates(host: HostConfig, project: str) -> Tuple[bool, bool, str, Dict
             image_status[image] = {"status": "unknown", "error": "no remote digest"}
             errors.append(f"{image}: unable to determine registry digest")
             continue
-
         local_digest_list = _digest_list(local_digests)
         if local_digest_list:
             if remote_digest in local_digest_list:
@@ -1681,7 +1998,6 @@ def check_updates(host: HostConfig, project: str) -> Tuple[bool, bool, str, Dict
             updates_available = True
             if local_error:
                 errors.append(f"{image}: local image check failed ({local_error})")
-
         image_status[image] = {
             "status": status,
             "local": local_digest_list[0] if local_digest_list else "none",
@@ -1690,7 +2006,6 @@ def check_updates(host: HostConfig, project: str) -> Tuple[bool, bool, str, Dict
         results.append(
             f"{image}: local={image_status[image]['local']} remote={remote_digest} status={status}"
         )
-
     if service_images:
         for service_name, image in service_images.items():
             status = image_status.get(image, {}).get("status", "unknown")
@@ -1701,12 +2016,10 @@ def check_updates(host: HostConfig, project: str) -> Tuple[bool, bool, str, Dict
             else:
                 per_service[service_name] = "unknown"
             results.append(f"{service_name}: image={image} status={status}")
-
     supported = bool(images)
     details_lines = results + errors
     details = "\n".join(details_lines).strip()
     return supported, updates_available, details, per_service
-
 
 def check_image_update(host: HostConfig, image: str) -> Optional[bool]:
     if not UPDATE_CHECKS_ENABLED:
@@ -1727,7 +2040,6 @@ def check_image_update(host: HostConfig, image: str) -> Optional[bool]:
         return True
     return True
 
-
 def apply_updates(host: HostConfig, project: str) -> Tuple[bool, str]:
     overall, _, _ = project_status(host, project)
     was_running = overall in ("up", "degraded")
@@ -1740,7 +2052,6 @@ def apply_updates(host: HostConfig, project: str) -> Tuple[bool, str]:
         outputs.extend([up_result.stdout, up_result.stderr])
     combined_output = "\n".join(outputs).strip()
     return updates_applied, combined_output
-
 
 def apply_updates_cancelable(host: HostConfig, project: str, stop_event) -> Tuple[bool, str]:
     overall, _, _ = project_status(host, project)
@@ -1758,7 +2069,6 @@ def apply_updates_cancelable(host: HostConfig, project: str, stop_event) -> Tupl
         outputs.extend([up_result.stdout, up_result.stderr])
     combined_output = "\n".join(outputs).strip()
     return updates_applied, combined_output
-
 
 def run_project_action_cancelable(
     host: HostConfig, project: str, action: str, stop_event

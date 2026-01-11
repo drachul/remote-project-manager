@@ -19,6 +19,7 @@ class HostConfigEntry(BaseModel):
     ssh_username: str
     ssh_key: str
     ssh_port: int = 22
+    docker_api_version: Optional[str] = None
 
 
 class BackupConfigEntry(BaseModel):
@@ -62,6 +63,7 @@ class ProjectListResponse(BaseModel):
     backup_last_at: Dict[str, Optional[datetime]] = Field(default_factory=dict)
     backup_last_success: Dict[str, Optional[bool]] = Field(default_factory=dict)
     backup_last_message: Dict[str, Optional[str]] = Field(default_factory=dict)
+    backup_last_failure: Dict[str, Optional[str]] = Field(default_factory=dict)
     backup_cron_override: Dict[str, Optional[str]] = Field(default_factory=dict)
 
 
@@ -238,6 +240,7 @@ class ProjectStateEntry(BaseModel):
     last_backup_at: Optional[datetime] = None
     last_backup_success: Optional[bool] = None
     last_backup_message: Optional[str] = None
+    last_backup_failure: Optional[str] = None
     services: List[ServiceStateEntry] = Field(default_factory=list)
 
 
@@ -277,6 +280,7 @@ class BackupSettingsResponse(BaseModel):
     last_backup_at: Optional[datetime] = None
     last_backup_success: Optional[bool] = None
     last_backup_message: Optional[str] = None
+    last_backup_failure: Optional[str] = None
     cron_override: Optional[str] = None
     effective_cron: Optional[str] = None
     next_run: Optional[datetime] = None
@@ -317,6 +321,8 @@ class BackupScheduleSummaryEntry(BaseModel):
     host_id: Optional[str] = None
     project: Optional[str] = None
     last_run: Optional[datetime] = None
+    last_success: Optional[bool] = None
+    last_failure: Optional[str] = None
     next_run: Optional[datetime] = None
     enabled: bool = False
     override: bool = False

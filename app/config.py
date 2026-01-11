@@ -5,6 +5,9 @@ from pydantic import BaseModel, Field, ValidationError
 
 
 class HostConfig(BaseModel):
+    host_id: Optional[str] = Field(
+        None, description="Host identifier used for docker context naming"
+    )
     host: str
     user: str
     ssh_key: Optional[str] = Field(
@@ -15,6 +18,9 @@ class HostConfig(BaseModel):
     )
     project_root: str = Field(..., description="Remote root containing compose projects")
     port: int = 22
+    docker_api_version: Optional[str] = Field(
+        None, description="Docker API version override (e.g. 1.43)"
+    )
 
 
 class BackupConfig(BaseModel):
