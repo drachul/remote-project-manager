@@ -19,7 +19,6 @@ class HostConfigEntry(BaseModel):
     ssh_username: str
     ssh_key: str
     ssh_port: int = 22
-    docker_api_version: Optional[str] = None
 
 
 class BackupConfigEntry(BaseModel):

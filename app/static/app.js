@@ -3241,16 +3241,12 @@ function buildHostConfigEntry(host, isNew) {
   const addressInput = entry.querySelector(".host-address");
   const userInput = entry.querySelector(".host-user");
   const portInput = entry.querySelector(".host-port");
-  const apiInput = entry.querySelector(".host-api-version");
   const keyInput = entry.querySelector(".host-key");
   idInput.value = host?.id || "";
   rootInput.value = host?.project_root || "";
   addressInput.value = host?.ssh_address || "";
   userInput.value = host?.ssh_username || "";
   portInput.value = host?.ssh_port ?? 22;
-  if (apiInput) {
-    apiInput.value = host?.docker_api_version || "";
-  }
   keyInput.value = host?.ssh_key || "";
   if (!isNew) {
     idInput.disabled = true;
@@ -3323,7 +3319,6 @@ function readHostConfig(entry) {
     ssh_username: entry.querySelector(".host-user").value.trim(),
     ssh_key: entry.querySelector(".host-key").value.trim(),
     ssh_port: Number.parseInt(entry.querySelector(".host-port").value, 10) || 22,
-    docker_api_version: entry.querySelector(".host-api-version")?.value.trim() || "",
   };
 }
 

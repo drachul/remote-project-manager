@@ -2,13 +2,9 @@ import contextlib
 import json
 import logging
 import os
-import queue
 import re
 import shlex
 import subprocess
-import tempfile
-import threading
-import time
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, Iterator, List, Optional, Tuple
@@ -16,13 +12,15 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from .config import BackupConfig, HostConfig
-from .docker_context import context_name, docker_env
 from .ssh import (
+    SSHCancelled,
     SSHError,
     SSHResult,
     read_remote_file,
     run_ssh_command,
+    run_ssh_command_cancelable,
     run_ssh_command_password,
+    stream_ssh_command,
     write_remote_file,
 )
 
@@ -45,7 +43,6 @@ UPDATE_CHECKS_ENABLED = os.getenv("UPDATE_CHECKS_ENABLED", "true").lower() in (
 )
 _SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _REGISTRY_AUTH_PARAM_RE = re.compile(r'(\w+)="([^"]*)"')
-_API_TOO_NEW_RE = re.compile(r"Maximum supported API version is ([0-9.]+)")
 logger = logging.getLogger("rpm")
 
 def _redact_headers(headers: Dict[str, str]) -> Dict[str, str]:
@@ -493,169 +490,23 @@ def docker_run_to_compose(command: str, service_name: Optional[str] = None) -> T
 def _project_dir(host: HostConfig, project: str) -> str:
     return f"{host.project_root.rstrip('/')}/{project}"
 
-def _require_host_id(host: HostConfig) -> str:
-    host_id = getattr(host, "host_id", None)
-    if not host_id:
-        raise ComposeError("Host id is required for docker context")
-    return host_id
-
-def _docker_context(host: HostConfig) -> str:
-    return context_name(_require_host_id(host))
-
-def _extract_api_version(message: str) -> Optional[str]:
-    if not message:
-        return None
-    match = _API_TOO_NEW_RE.search(message)
-    if match:
-        return match.group(1)
-    return None
-
-def _docker_env(host: HostConfig) -> Dict[str, str]:
-    host_id = _require_host_id(host)
-    return docker_env(host_id, host)
-
-def _terminate_process(process: subprocess.Popen) -> None:
-    process.terminate()
-    try:
-        process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        process.kill()
-
-def _run_docker_with_env(
-    host: HostConfig,
-    args: List[str],
-    env: Dict[str, str],
-    timeout: int,
-) -> SSHResult:
-    command = ["docker", "--context", _docker_context(host)] + args
-    command_str = " ".join(shlex.quote(arg) for arg in command)
-    logger.debug(
-        "Docker exec host_id=%s command=%s",
-        getattr(host, "host_id", None),
-        command_str,
-    )
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=timeout,
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise ComposeError("docker CLI not available") from exc
-    return SSHResult(
-        command=command_str,
-        exit_code=result.returncode,
-        stdout=(result.stdout or "").strip(),
-        stderr=(result.stderr or "").strip(),
-    )
+def _docker_command(args: List[str]) -> str:
+    return "docker " + " ".join(shlex.quote(arg) for arg in args)
 
 def _run_docker(host: HostConfig, args: List[str], timeout: int = 120) -> SSHResult:
-    env = _docker_env(host)
-    result = _run_docker_with_env(host, args, env, timeout)
-    if result.exit_code != 0:
-        max_version = _extract_api_version(result.stderr)
-        if not max_version:
-            max_version = _extract_api_version(result.stdout)
-        if max_version:
-            logger.debug(
-                "Docker API fallback host_id=%s api_version=%s",
-                getattr(host, "host_id", None),
-                max_version,
-            )
-            env_retry = env.copy()
-            env_retry["DOCKER_API_VERSION"] = max_version
-            result = _run_docker_with_env(host, args, env_retry, timeout)
-    return result
+    command = _docker_command(args)
+    return run_ssh_command(host, command, timeout=timeout)
 
 def _run_docker_cancelable(
     host: HostConfig, args: List[str], stop_event, timeout: int = 120
 ) -> SSHResult:
     if stop_event.is_set():
         raise ComposeCancelled("Compose action cancelled")
-    env = _docker_env(host)
-    command = ["docker", "--context", _docker_context(host)] + args
-    command_str = " ".join(shlex.quote(arg) for arg in command)
-    logger.debug(
-        "Docker exec host_id=%s command=%s",
-        getattr(host, "host_id", None),
-        command_str,
-    )
+    command = _docker_command(args)
     try:
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-            bufsize=1,
-        )
-    except FileNotFoundError as exc:
-        raise ComposeError("docker CLI not available") from exc
-    stdout_lines: List[str] = []
-    stderr_lines: List[str] = []
-    output_queue: queue.Queue[tuple[str, Optional[str]]] = queue.Queue()
-    def reader(stream, name: str) -> None:
-        for line in iter(stream.readline, ""):
-            output_queue.put((name, line))
-        output_queue.put((name, None))
-        stream.close()
-    threads = [
-        threading.Thread(target=reader, args=(process.stdout, "stdout"), daemon=True),
-        threading.Thread(target=reader, args=(process.stderr, "stderr"), daemon=True),
-    ]
-    for thread in threads:
-        thread.start()
-    done = 0
-    start_time = time.monotonic()
-    while done < 2:
-        if stop_event.is_set():
-            _terminate_process(process)
-            raise ComposeCancelled("Compose action cancelled")
-        if timeout and time.monotonic() - start_time > timeout:
-            _terminate_process(process)
-            raise ComposeError("Compose command timed out")
-        try:
-            name, line = output_queue.get(timeout=0.1)
-        except queue.Empty:
-            if process.poll() is not None and done >= 2:
-                break
-            continue
-        if line is None:
-            done += 1
-            continue
-        if name == "stdout":
-            stdout_lines.append(line)
-        else:
-            stderr_lines.append(line)
-    try:
-        process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        _terminate_process(process)
-    result = SSHResult(
-        command=command_str,
-        exit_code=process.returncode or 0,
-        stdout="".join(stdout_lines).strip(),
-        stderr="".join(stderr_lines).strip(),
-    )
-    if result.exit_code != 0:
-        max_version = _extract_api_version(result.stderr)
-        if not max_version:
-            max_version = _extract_api_version(result.stdout)
-        if max_version:
-            if stop_event.is_set():
-                raise ComposeCancelled("Compose action cancelled")
-            logger.debug(
-                "Docker API fallback host_id=%s api_version=%s",
-                getattr(host, "host_id", None),
-                max_version,
-            )
-            env_retry = env.copy()
-            env_retry["DOCKER_API_VERSION"] = max_version
-            return _run_docker_with_env(host, args, env_retry, timeout)
-    return result
+        return run_ssh_command_cancelable(host, command, stop_event, timeout=timeout)
+    except SSHCancelled as exc:
+        raise ComposeCancelled(str(exc)) from exc
 
 def _stream_docker_command(
     host: HostConfig,
@@ -664,83 +515,26 @@ def _stream_docker_command(
     timeout: int = 300,
     include_exit: bool = False,
 ) -> Iterator[Tuple[str, str]]:
-    env = _docker_env(host)
-    command = ["docker", "--context", _docker_context(host)] + args
-    command_str = " ".join(shlex.quote(arg) for arg in command)
-    logger.debug(
-        "Docker stream host_id=%s command=%s",
-        getattr(host, "host_id", None),
-        command_str,
+    command = _docker_command(args)
+    yield from stream_ssh_command(
+        host, command, stop_event, timeout=timeout, include_exit=include_exit
     )
-    try:
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-            bufsize=1,
-        )
-    except FileNotFoundError as exc:
-        raise ComposeError("docker CLI not available") from exc
-    output_queue: queue.Queue[tuple[str, Optional[str]]] = queue.Queue()
-    def reader(stream, name: str) -> None:
-        for line in iter(stream.readline, ""):
-            output_queue.put((name, line))
-        output_queue.put((name, None))
-        stream.close()
-    threads = [
-        threading.Thread(target=reader, args=(process.stdout, "stdout"), daemon=True),
-        threading.Thread(target=reader, args=(process.stderr, "stderr"), daemon=True),
-    ]
-    for thread in threads:
-        thread.start()
-    done = 0
-    start_time = time.monotonic()
-    while done < 2:
-        if stop_event.is_set():
-            _terminate_process(process)
-            break
-        if timeout and time.monotonic() - start_time > timeout:
-            _terminate_process(process)
-            break
-        try:
-            name, line = output_queue.get(timeout=0.1)
-        except queue.Empty:
-            if process.poll() is not None and done >= 2:
-                break
-            continue
-        if line is None:
-            done += 1
-            continue
-        yield (name, line.rstrip("\n"))
-    try:
-        process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        _terminate_process(process)
-    if include_exit and not stop_event.is_set():
-        exit_code = process.returncode
-        if exit_code is None:
-            try:
-                exit_code = process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                exit_code = 0
-        yield ("exit", str(exit_code))
+
 @contextlib.contextmanager
 def _compose_tempfile(
     host: HostConfig, project: str, content: Optional[str] = None
 ) -> Iterator[str]:
     if content is None:
-        _, content = read_compose_file(host, project)
-    fd, path = tempfile.mkstemp(prefix="rpm-compose-", suffix=".yml")
+        yield get_compose_file_path(host, project)
+        return
+    tmp_path = f"/tmp/rpm-compose-{uuid.uuid4().hex}.yml"
+    write_remote_file(host, tmp_path, content)
     try:
-        with os.fdopen(fd, "w") as handle:
-            handle.write(content)
-        yield path
+        yield tmp_path
     finally:
         try:
-            os.unlink(path)
-        except OSError:
+            run_ssh_command(host, f"rm -f {shlex.quote(tmp_path)}")
+        except SSHError:
             pass
 
 def _compose_args(project_dir: str, project: str, compose_path: str) -> List[str]:

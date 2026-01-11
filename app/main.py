@@ -1,10 +1,5 @@
 import asyncio
 import base64
-import fcntl
-import pty
-import select
-import struct
-import termios
 import contextlib
 import hashlib
 import hmac
@@ -15,7 +10,6 @@ import resource
 import secrets
 import shlex
 import sqlite3
-import subprocess
 import string
 import stat
 import threading
@@ -44,14 +38,6 @@ from .config import (
     get_host_config,
     load_config,
 )
-from .docker_context import (
-    DockerContextError,
-    context_name,
-    docker_env,
-    ensure_docker_context,
-    remove_docker_context,
-)
-from .paths import ensure_config_dirs
 from .models import (
     StateRefreshResponse,
     StateResponse,
@@ -99,7 +85,7 @@ from .models import (
     BackupScheduleSummaryEntry,
     BackupScheduleSummaryResponse,
 )
-from .ssh import SSHError, stream_ssh_command
+from .ssh import SSHError, open_ssh_shell, stream_ssh_command
 
 app = FastAPI(title="Remote Project Manager", version="0.1.0")
 
@@ -165,7 +151,6 @@ async def load_settings() -> None:
     app.state.loop = asyncio.get_running_loop()
     _ensure_fd_limit()
     app.state.config = load_config()
-    ensure_config_dirs()
     _configure_logging(app.state.config.log_level)
     app.state.db_path = _db_path()
     if not app.state.db_path:
@@ -173,7 +158,6 @@ async def load_settings() -> None:
     _log_db_path_diagnostics(app.state.db_path)
     _ensure_db(app.state.db_path)
     app.state.config = _load_config_from_db(app.state.config)
-    _ensure_host_contexts(app.state.config.hosts)
     logger.info("Starting Remote Project Manager")
     app.state.state_lock = asyncio.Lock()
     app.state.backup_lock = asyncio.Lock()
@@ -709,8 +693,7 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
                 "ssh_address TEXT, "
                 "ssh_username TEXT, "
                 "ssh_key TEXT, "
-                "ssh_port INTEGER, "
-                "docker_api_version TEXT"
+                "ssh_port INTEGER"
                 ")"
             )
             conn.execute(
@@ -785,7 +768,6 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
             _ensure_column(conn, "backup_state", "cron_override", "TEXT")
             _ensure_column(conn, "project_state", "sleeping", "BOOLEAN DEFAULT 0")
             _ensure_column(conn, "backups", "enabled", "BOOLEAN DEFAULT 1")
-            _ensure_column(conn, "hosts", "docker_api_version", "TEXT")
             admin_exists = conn.execute(
                 "SELECT 1 FROM users WHERE username = ?", ("admin",)
             ).fetchone()
@@ -1186,7 +1168,7 @@ def _load_hosts_from_db(path: str) -> Dict[str, HostConfig]:
     with _open_db(path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT id, project_root, ssh_address, ssh_username, ssh_key, ssh_port, docker_api_version "
+            "SELECT id, project_root, ssh_address, ssh_username, ssh_key, ssh_port "
             "FROM hosts"
         ).fetchall()
     hosts: Dict[str, HostConfig] = {}
@@ -1201,7 +1183,6 @@ def _load_hosts_from_db(path: str) -> Dict[str, HostConfig]:
         if not host or not user or not project_root or not ssh_key:
             raise ConfigError(f"Host {host_id} missing required fields in DB.")
         port = row["ssh_port"] if row["ssh_port"] is not None else 22
-        docker_api_version = row["docker_api_version"]
         hosts[host_id] = HostConfig(
             host_id=host_id,
             host=host,
@@ -1209,7 +1190,6 @@ def _load_hosts_from_db(path: str) -> Dict[str, HostConfig]:
             ssh_key=ssh_key,
             project_root=project_root,
             port=int(port),
-            docker_api_version=docker_api_version,
         )
     return hosts
 
@@ -1269,18 +1249,9 @@ def _load_config_from_db(config: AppConfig) -> AppConfig:
     return config.model_copy(update={"hosts": hosts, "backup": backup})
 
 
-def _ensure_host_contexts(hosts: Dict[str, HostConfig]) -> None:
-    for host_id, host in hosts.items():
-        try:
-            ensure_docker_context(host_id, host)
-        except DockerContextError as exc:
-            logger.error("Docker context setup failed host_id=%s error=%s", host_id, exc)
-            raise
-
 
 def _refresh_config_from_db() -> None:
     app.state.config = _load_config_from_db(app.state.config)
-    _ensure_host_contexts(app.state.config.hosts)
 
 
 def _parse_timestamp(value: object) -> Optional[datetime]:
@@ -2898,15 +2869,6 @@ async def _update_refresh_loop() -> None:
 
 
 
-def _resize_pty(fd: int, cols: int, rows: int) -> None:
-    if cols <= 0 or rows <= 0:
-        return
-    size = struct.pack("HHHH", rows, cols, 0, 0)
-    try:
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, size)
-    except OSError:
-        pass
-
 
 
 def _config() -> AppConfig:
@@ -2981,7 +2943,7 @@ def list_host_configs() -> List[HostConfigEntry]:
     with _open_db(path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT id, project_root, ssh_address, ssh_username, ssh_key, ssh_port, docker_api_version "
+            "SELECT id, project_root, ssh_address, ssh_username, ssh_key, ssh_port "
             "FROM hosts ORDER BY id"
         ).fetchall()
     entries = []
@@ -2994,7 +2956,6 @@ def list_host_configs() -> List[HostConfigEntry]:
                 ssh_username=row["ssh_username"] or "",
                 ssh_key=row["ssh_key"] or "",
                 ssh_port=int(row["ssh_port"] or 22),
-                docker_api_version=row["docker_api_version"],
             )
         )
     return entries
@@ -3016,8 +2977,8 @@ def create_host_config(entry: HostConfigEntry) -> HostConfigEntry:
     try:
         with _open_db(path) as conn:
             conn.execute(
-                "INSERT INTO hosts (id, project_root, ssh_address, ssh_username, ssh_key, ssh_port, docker_api_version) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO hosts (id, project_root, ssh_address, ssh_username, ssh_key, ssh_port) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     entry.id.strip(),
                     entry.project_root.strip(),
@@ -3025,27 +2986,10 @@ def create_host_config(entry: HostConfigEntry) -> HostConfigEntry:
                     entry.ssh_username.strip(),
                     entry.ssh_key.strip(),
                     entry.ssh_port,
-                    entry.docker_api_version.strip() or None if entry.docker_api_version else None,
                 ),
             )
     except sqlite3.IntegrityError as exc:
         raise HTTPException(status_code=409, detail="Host id already exists.") from exc
-    host_id = entry.id.strip()
-    host = HostConfig(
-        host_id=host_id,
-        host=entry.ssh_address.strip(),
-        user=entry.ssh_username.strip(),
-        ssh_key=entry.ssh_key.strip(),
-        project_root=entry.project_root.strip(),
-        port=entry.ssh_port,
-        docker_api_version=entry.docker_api_version.strip() or None if entry.docker_api_version else None,
-    )
-    try:
-        ensure_docker_context(host_id, host)
-    except DockerContextError as exc:
-        with _open_db(path) as conn:
-            conn.execute("DELETE FROM hosts WHERE id = ?", (host_id,))
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
     _refresh_config_from_db()
     return entry
 
@@ -3065,7 +3009,7 @@ def update_host_config(host_id: str, entry: HostConfigEntry) -> HostConfigEntry:
     path = _require_db_path()
     with _open_db(path) as conn:
         cursor = conn.execute(
-            "UPDATE hosts SET project_root = ?, ssh_address = ?, ssh_username = ?, ssh_key = ?, ssh_port = ?, docker_api_version = ? "
+            "UPDATE hosts SET project_root = ?, ssh_address = ?, ssh_username = ?, ssh_key = ?, ssh_port = ? "
             "WHERE id = ?",
             (
                 entry.project_root.strip(),
@@ -3073,25 +3017,11 @@ def update_host_config(host_id: str, entry: HostConfigEntry) -> HostConfigEntry:
                 entry.ssh_username.strip(),
                 entry.ssh_key.strip(),
                 entry.ssh_port,
-                entry.docker_api_version.strip() or None if entry.docker_api_version else None,
                 host_id,
             ),
         )
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Host not found.")
-    host = HostConfig(
-        host_id=host_id,
-        host=entry.ssh_address.strip(),
-        user=entry.ssh_username.strip(),
-        ssh_key=entry.ssh_key.strip(),
-        project_root=entry.project_root.strip(),
-        port=entry.ssh_port,
-        docker_api_version=entry.docker_api_version.strip() or None if entry.docker_api_version else None,
-    )
-    try:
-        ensure_docker_context(host_id, host)
-    except DockerContextError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
     _refresh_config_from_db()
     return entry
 
@@ -3105,7 +3035,6 @@ def delete_host_config(host_id: str) -> SimpleStatusResponse:
             raise HTTPException(status_code=404, detail="Host not found.")
         conn.execute("DELETE FROM backup_state WHERE host_id = ?", (host_id,))
         conn.execute("DELETE FROM project_state WHERE host_id = ?", (host_id,))
-    remove_docker_context(host_id)
     _refresh_config_from_db()
     return SimpleStatusResponse(ok=True)
 
@@ -3595,37 +3524,13 @@ async def service_shell(
     rows = int(websocket.query_params.get("rows", "24"))
     stop_event = threading.Event()
     loop = asyncio.get_running_loop()
-    master_fd = None
-    process = None
+    client = None
+    channel = None
+    command = f"docker exec -it {shlex.quote(container)} /bin/sh"
 
     try:
-        master_fd, slave_fd = pty.openpty()
-        _resize_pty(slave_fd, cols, rows)
-        env = docker_env(host_id, host)
-        command = [
-            "docker",
-            "--context",
-            context_name(host_id),
-            "exec",
-            "-it",
-            container,
-            "/bin/sh",
-        ]
-        process = subprocess.Popen(
-            command,
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            env=env,
-            close_fds=True,
-        )
-        os.close(slave_fd)
+        client, channel = open_ssh_shell(host, command, cols=cols, rows=rows)
     except Exception as exc:
-        if master_fd is not None:
-            try:
-                os.close(master_fd)
-            except OSError:
-                pass
         await websocket.send_text(f"error: {exc}")
         await websocket.close()
         return
@@ -3633,18 +3538,19 @@ async def service_shell(
     def reader() -> None:
         try:
             while not stop_event.is_set():
-                if process and process.poll() is not None:
+                if channel.recv_ready():
+                    data = channel.recv(4096)
+                    if data:
+                        asyncio.run_coroutine_threadsafe(websocket.send_bytes(data), loop)
+                        continue
+                if channel.recv_stderr_ready():
+                    data = channel.recv_stderr(4096)
+                    if data:
+                        asyncio.run_coroutine_threadsafe(websocket.send_bytes(data), loop)
+                        continue
+                if channel.exit_status_ready():
                     break
-                rlist, _, _ = select.select([master_fd], [], [], 0.1)
-                if not rlist:
-                    continue
-                try:
-                    data = os.read(master_fd, 4096)
-                except OSError:
-                    break
-                if not data:
-                    break
-                asyncio.run_coroutine_threadsafe(websocket.send_bytes(data), loop)
+                time.sleep(0.05)
         except Exception as exc:
             asyncio.run_coroutine_threadsafe(
                 websocket.send_text(f"error: {exc}"), loop
@@ -3668,26 +3574,29 @@ async def service_shell(
                 try:
                     resize_cols = int(payload.get("cols", cols))
                     resize_rows = int(payload.get("rows", rows))
-                    _resize_pty(master_fd, resize_cols, resize_rows)
-                except (ValueError, TypeError):
+                    channel.resize_pty(width=resize_cols, height=resize_rows)
+                except (ValueError, TypeError, AttributeError):
                     pass
                 continue
             data = payload.get("data", "")
             if data:
                 try:
-                    os.write(master_fd, data.encode())
-                except OSError:
+                    channel.send(data)
+                except Exception:
                     break
     except WebSocketDisconnect:
         stop_event.set()
     finally:
         stop_event.set()
-        if process and process.poll() is None:
-            process.terminate()
-        if master_fd is not None:
+        if channel is not None:
             try:
-                os.close(master_fd)
-            except OSError:
+                channel.close()
+            except Exception:
+                pass
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
                 pass
 
 
