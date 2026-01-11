@@ -1,5 +1,10 @@
 import asyncio
 import base64
+import fcntl
+import pty
+import select
+import struct
+import termios
 import contextlib
 import hashlib
 import hmac
@@ -10,6 +15,7 @@ import resource
 import secrets
 import shlex
 import sqlite3
+import subprocess
 import string
 import stat
 import threading
@@ -38,6 +44,14 @@ from .config import (
     get_host_config,
     load_config,
 )
+from .docker_context import (
+    DockerContextError,
+    context_name,
+    docker_env,
+    ensure_docker_context,
+    remove_docker_context,
+)
+from .paths import ensure_config_dirs
 from .models import (
     StateRefreshResponse,
     StateResponse,
@@ -85,7 +99,7 @@ from .models import (
     BackupScheduleSummaryEntry,
     BackupScheduleSummaryResponse,
 )
-from .ssh import SSHError, open_ssh_shell, stream_ssh_command
+from .ssh import SSHError, stream_ssh_command
 
 app = FastAPI(title="Remote Project Manager", version="0.1.0")
 
@@ -151,6 +165,7 @@ async def load_settings() -> None:
     app.state.loop = asyncio.get_running_loop()
     _ensure_fd_limit()
     app.state.config = load_config()
+    ensure_config_dirs()
     _configure_logging(app.state.config.log_level)
     app.state.db_path = _db_path()
     if not app.state.db_path:
@@ -158,6 +173,7 @@ async def load_settings() -> None:
     _log_db_path_diagnostics(app.state.db_path)
     _ensure_db(app.state.db_path)
     app.state.config = _load_config_from_db(app.state.config)
+    _ensure_host_contexts(app.state.config.hosts)
     logger.info("Starting Remote Project Manager")
     app.state.state_lock = asyncio.Lock()
     app.state.backup_lock = asyncio.Lock()
@@ -693,7 +709,8 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
                 "ssh_address TEXT, "
                 "ssh_username TEXT, "
                 "ssh_key TEXT, "
-                "ssh_port INTEGER"
+                "ssh_port INTEGER, "
+                "docker_api_version TEXT"
                 ")"
             )
             conn.execute(
@@ -757,15 +774,18 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
                 "last_backup_at DATETIME, "
                 "last_backup_success BOOLEAN, "
                 "last_backup_message TEXT, "
+                "last_backup_failure TEXT, "
                 "PRIMARY KEY (host_id, project), "
                 "FOREIGN KEY (host_id) REFERENCES hosts(id) ON DELETE CASCADE"
                 ")"
             )
             _ensure_column(conn, "service_state", "update_checked_at", "DATETIME")
             _ensure_column(conn, "backup_state", "last_backup_message", "TEXT")
+            _ensure_column(conn, "backup_state", "last_backup_failure", "TEXT")
             _ensure_column(conn, "backup_state", "cron_override", "TEXT")
             _ensure_column(conn, "project_state", "sleeping", "BOOLEAN DEFAULT 0")
             _ensure_column(conn, "backups", "enabled", "BOOLEAN DEFAULT 1")
+            _ensure_column(conn, "hosts", "docker_api_version", "TEXT")
             admin_exists = conn.execute(
                 "SELECT 1 FROM users WHERE username = ?", ("admin",)
             ).fetchone()
@@ -911,14 +931,14 @@ def _load_backup_settings(
         if host_id:
             rows = conn.execute(
                 "SELECT host_id, project, enabled, cron_override, last_backup_at, "
-                "last_backup_success, last_backup_message "
+                "last_backup_success, last_backup_message, last_backup_failure "
                 "FROM backup_state WHERE host_id = ?",
                 (host_id,),
             ).fetchall()
         else:
             rows = conn.execute(
                 "SELECT host_id, project, enabled, cron_override, last_backup_at, "
-                "last_backup_success, last_backup_message "
+                "last_backup_success, last_backup_message, last_backup_failure "
                 "FROM backup_state"
             ).fetchall()
     settings = {}
@@ -933,6 +953,7 @@ def _load_backup_settings(
                 else bool(row["last_backup_success"])
             ),
             "last_backup_message": row["last_backup_message"],
+            "last_backup_failure": row["last_backup_failure"],
         }
     return settings
 
@@ -949,7 +970,7 @@ def _set_backup_enabled(host_id: str, project: str, enabled: bool) -> dict:
             (host_id, project, 1 if enabled else 0),
         )
         row = conn.execute(
-            "SELECT enabled, cron_override, last_backup_at, last_backup_success, last_backup_message "
+            "SELECT enabled, cron_override, last_backup_at, last_backup_success, last_backup_message, last_backup_failure "
             "FROM backup_state WHERE host_id = ? AND project = ?",
             (host_id, project),
         ).fetchone()
@@ -961,6 +982,7 @@ def _set_backup_enabled(host_id: str, project: str, enabled: bool) -> dict:
             None if not row or row[3] is None else bool(row[3])
         ),
         "last_backup_message": row[4] if row else None,
+        "last_backup_failure": row[5] if row else None,
     }
 
 
@@ -978,7 +1000,7 @@ def _set_backup_cron_override(
             (host_id, project, cron_expr),
         )
         row = conn.execute(
-            "SELECT enabled, cron_override, last_backup_at, last_backup_success, last_backup_message "
+            "SELECT enabled, cron_override, last_backup_at, last_backup_success, last_backup_message, last_backup_failure "
             "FROM backup_state WHERE host_id = ? AND project = ?",
             (host_id, project),
         ).fetchone()
@@ -990,6 +1012,7 @@ def _set_backup_cron_override(
             None if not row or row[3] is None else bool(row[3])
         ),
         "last_backup_message": row[4] if row else None,
+        "last_backup_failure": row[5] if row else None,
     }
 
 
@@ -1003,12 +1026,15 @@ def _record_backup_result(
     with _open_db(path) as conn:
         conn.execute(
             "INSERT INTO backup_state "
-            "(host_id, project, enabled, last_backup_at, last_backup_success, last_backup_message) "
-            "VALUES (?, ?, COALESCE((SELECT enabled FROM backup_state WHERE host_id = ? AND project = ?), 0), ?, ?, ?) "
+            "(host_id, project, enabled, last_backup_at, last_backup_success, last_backup_message, last_backup_failure) "
+            "VALUES (?, ?, COALESCE((SELECT enabled FROM backup_state WHERE host_id = ? AND project = ?), 0), ?, ?, ?, ?) "
             "ON CONFLICT(host_id, project) DO UPDATE SET "
             "last_backup_at = excluded.last_backup_at, "
             "last_backup_success = excluded.last_backup_success, "
-            "last_backup_message = excluded.last_backup_message",
+            "last_backup_message = excluded.last_backup_message, "
+            "last_backup_failure = CASE "
+            "WHEN excluded.last_backup_success = 0 THEN excluded.last_backup_failure "
+            "ELSE backup_state.last_backup_failure END",
             (
                 host_id,
                 project,
@@ -1017,6 +1043,7 @@ def _record_backup_result(
                 _now().isoformat(),
                 1 if success else 0,
                 message,
+                message if not success else None,
             ),
         )
 
@@ -1159,7 +1186,7 @@ def _load_hosts_from_db(path: str) -> Dict[str, HostConfig]:
     with _open_db(path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT id, project_root, ssh_address, ssh_username, ssh_key, ssh_port "
+            "SELECT id, project_root, ssh_address, ssh_username, ssh_key, ssh_port, docker_api_version "
             "FROM hosts"
         ).fetchall()
     hosts: Dict[str, HostConfig] = {}
@@ -1174,12 +1201,15 @@ def _load_hosts_from_db(path: str) -> Dict[str, HostConfig]:
         if not host or not user or not project_root or not ssh_key:
             raise ConfigError(f"Host {host_id} missing required fields in DB.")
         port = row["ssh_port"] if row["ssh_port"] is not None else 22
+        docker_api_version = row["docker_api_version"]
         hosts[host_id] = HostConfig(
+            host_id=host_id,
             host=host,
             user=user,
             ssh_key=ssh_key,
             project_root=project_root,
             port=int(port),
+            docker_api_version=docker_api_version,
         )
     return hosts
 
@@ -1239,8 +1269,18 @@ def _load_config_from_db(config: AppConfig) -> AppConfig:
     return config.model_copy(update={"hosts": hosts, "backup": backup})
 
 
+def _ensure_host_contexts(hosts: Dict[str, HostConfig]) -> None:
+    for host_id, host in hosts.items():
+        try:
+            ensure_docker_context(host_id, host)
+        except DockerContextError as exc:
+            logger.error("Docker context setup failed host_id=%s error=%s", host_id, exc)
+            raise
+
+
 def _refresh_config_from_db() -> None:
     app.state.config = _load_config_from_db(app.state.config)
+    _ensure_host_contexts(app.state.config.hosts)
 
 
 def _parse_timestamp(value: object) -> Optional[datetime]:
@@ -1540,13 +1580,13 @@ def _load_state_from_db(host_id: Optional[str] = None) -> dict:
 
         if host_id:
             backup_rows = conn.execute(
-                "SELECT host_id, project, enabled, last_backup_at, last_backup_success, last_backup_message "
+                "SELECT host_id, project, enabled, last_backup_at, last_backup_success, last_backup_message, last_backup_failure "
                 "FROM backup_state WHERE host_id = ?",
                 (host_id,),
             ).fetchall()
         else:
             backup_rows = conn.execute(
-                "SELECT host_id, project, enabled, last_backup_at, last_backup_success, last_backup_message "
+                "SELECT host_id, project, enabled, last_backup_at, last_backup_success, last_backup_message, last_backup_failure "
                 "FROM backup_state"
             ).fetchall()
         backup_map = {}
@@ -1559,7 +1599,14 @@ def _load_state_from_db(host_id: Optional[str] = None) -> dict:
                     if row["last_backup_success"] is None
                     else bool(row["last_backup_success"])
                 ),
+                "last_backup_failure": row["last_backup_failure"],
+                "last_backup_success": (
+                    None
+                    if row["last_backup_success"] is None
+                    else bool(row["last_backup_success"])
+                ),
                 "last_backup_message": row["last_backup_message"],
+                "last_backup_failure": row["last_backup_failure"],
             }
 
         host_map: Dict[str, dict] = {}
@@ -1587,6 +1634,7 @@ def _load_state_from_db(host_id: Optional[str] = None) -> dict:
                     "last_backup_at": backup_info.get("last_backup_at"),
                     "last_backup_success": backup_info.get("last_backup_success"),
                     "last_backup_message": backup_info.get("last_backup_message"),
+                    "last_backup_failure": backup_info.get("last_backup_failure"),
                     "services": sorted(
                         services_by_project.get((row["host_id"], row["id"]), []),
                         key=lambda item: item["id"],
@@ -2160,6 +2208,7 @@ def _purge_expired_tokens() -> None:
 async def _token_cleanup_loop() -> None:
     while True:
         run_at = _now()
+        logger.debug("Event trigger token_cleanup")
         try:
             await asyncio.to_thread(_purge_expired_tokens)
             _record_event_result("token_cleanup", True, "Token cleanup complete", run_at)
@@ -2176,6 +2225,7 @@ async def _fd_track_loop() -> None:
     interval = max(1, FD_TRACK_INTERVAL_SECONDS)
     while True:
         run_at = _now()
+        logger.debug("Event trigger fd_track")
         try:
             summary = await asyncio.to_thread(_log_fd_usage)
             if summary:
@@ -2497,11 +2547,14 @@ def _load_backup_state_rows() -> List[dict]:
     with _open_db(path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT host_id, project, enabled, cron_override, last_backup_at "
+            "SELECT host_id, project, enabled, cron_override, last_backup_at, last_backup_success, last_backup_failure "
             "FROM backup_state"
         ).fetchall()
     items = []
     for row in rows:
+        last_backup_success = row["last_backup_success"]
+        if last_backup_success is not None:
+            last_backup_success = bool(last_backup_success)
         items.append(
             {
                 "host_id": row["host_id"],
@@ -2509,10 +2562,11 @@ def _load_backup_state_rows() -> List[dict]:
                 "enabled": bool(row["enabled"]),
                 "cron_override": row["cron_override"],
                 "last_backup_at": _parse_timestamp(row["last_backup_at"]),
+                "last_backup_success": last_backup_success,
+                "last_backup_failure": row["last_backup_failure"],
             }
         )
     return items
-
 
 def _global_backup_last_run(rows: List[dict]) -> Optional[datetime]:
     latest = None
@@ -2538,12 +2592,26 @@ def _build_backup_schedule_summary() -> List[BackupScheduleSummaryEntry]:
         base_time = global_last_run or now
         global_next_run = _next_cron_run(cron_expr, base_time)
 
+    global_last_success = None
+    global_last_failure = None
+    if global_last_run:
+        candidates = [
+            row for row in rows
+            if row.get("enabled") and not row.get("cron_override") and row.get("last_backup_at")
+        ]
+        if candidates:
+            latest = max(candidates, key=lambda item: item["last_backup_at"])
+            global_last_success = latest.get("last_backup_success")
+            global_last_failure = latest.get("last_backup_failure")
+
     items: List[BackupScheduleSummaryEntry] = [
         BackupScheduleSummaryEntry(
             key="global",
             scope="global",
             name="global",
             last_run=global_last_run,
+            last_success=global_last_success,
+            last_failure=global_last_failure,
             next_run=global_next_run,
             enabled=global_enabled,
             override=False,
@@ -2572,6 +2640,8 @@ def _build_backup_schedule_summary() -> List[BackupScheduleSummaryEntry]:
                 host_id=host_id,
                 project=project,
                 last_run=row.get("last_backup_at"),
+                last_success=row.get("last_backup_success"),
+                last_failure=row.get("last_backup_failure"),
                 next_run=next_run,
                 enabled=enabled,
                 override=override,
@@ -2694,6 +2764,7 @@ async def _backup_refresh_loop() -> None:
     while True:
         try:
             now = _now()
+            logger.debug("Event trigger backup_schedule")
             cron_expr = await asyncio.to_thread(_load_backup_cron)
             enabled = await asyncio.to_thread(_load_enabled_backups)
             schedule_map = app.state.backup_schedule_map
@@ -2786,6 +2857,7 @@ async def _state_refresh_loop() -> None:
         return
     while True:
         run_at = _now()
+        logger.debug("Event trigger status_refresh")
         try:
             await _refresh_status_candidate()
             _record_event_result(
@@ -2804,6 +2876,7 @@ async def _update_refresh_loop() -> None:
         return
     while True:
         run_at = _now()
+        logger.debug("Event trigger update_refresh")
         if not compose.UPDATE_CHECKS_ENABLED:
             _record_event_result(
                 "update_refresh", None, "Update checks disabled", run_at
@@ -2825,15 +2898,29 @@ async def _update_refresh_loop() -> None:
 
 
 
+def _resize_pty(fd: int, cols: int, rows: int) -> None:
+    if cols <= 0 or rows <= 0:
+        return
+    size = struct.pack("HHHH", rows, cols, 0, 0)
+    try:
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, size)
+    except OSError:
+        pass
+
+
+
 def _config() -> AppConfig:
     return app.state.config
 
 
 def _host(host_id: str):
     try:
-        return get_host_config(_config(), host_id)
+        host = get_host_config(_config(), host_id)
     except ConfigError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not getattr(host, "host_id", None):
+        host = host.model_copy(update={"host_id": host_id})
+    return host
 
 
 def _backup_config():
@@ -2894,7 +2981,7 @@ def list_host_configs() -> List[HostConfigEntry]:
     with _open_db(path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT id, project_root, ssh_address, ssh_username, ssh_key, ssh_port "
+            "SELECT id, project_root, ssh_address, ssh_username, ssh_key, ssh_port, docker_api_version "
             "FROM hosts ORDER BY id"
         ).fetchall()
     entries = []
@@ -2907,6 +2994,7 @@ def list_host_configs() -> List[HostConfigEntry]:
                 ssh_username=row["ssh_username"] or "",
                 ssh_key=row["ssh_key"] or "",
                 ssh_port=int(row["ssh_port"] or 22),
+                docker_api_version=row["docker_api_version"],
             )
         )
     return entries
@@ -2928,8 +3016,8 @@ def create_host_config(entry: HostConfigEntry) -> HostConfigEntry:
     try:
         with _open_db(path) as conn:
             conn.execute(
-                "INSERT INTO hosts (id, project_root, ssh_address, ssh_username, ssh_key, ssh_port) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO hosts (id, project_root, ssh_address, ssh_username, ssh_key, ssh_port, docker_api_version) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     entry.id.strip(),
                     entry.project_root.strip(),
@@ -2937,10 +3025,27 @@ def create_host_config(entry: HostConfigEntry) -> HostConfigEntry:
                     entry.ssh_username.strip(),
                     entry.ssh_key.strip(),
                     entry.ssh_port,
+                    entry.docker_api_version.strip() or None if entry.docker_api_version else None,
                 ),
             )
     except sqlite3.IntegrityError as exc:
         raise HTTPException(status_code=409, detail="Host id already exists.") from exc
+    host_id = entry.id.strip()
+    host = HostConfig(
+        host_id=host_id,
+        host=entry.ssh_address.strip(),
+        user=entry.ssh_username.strip(),
+        ssh_key=entry.ssh_key.strip(),
+        project_root=entry.project_root.strip(),
+        port=entry.ssh_port,
+        docker_api_version=entry.docker_api_version.strip() or None if entry.docker_api_version else None,
+    )
+    try:
+        ensure_docker_context(host_id, host)
+    except DockerContextError as exc:
+        with _open_db(path) as conn:
+            conn.execute("DELETE FROM hosts WHERE id = ?", (host_id,))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     _refresh_config_from_db()
     return entry
 
@@ -2960,7 +3065,7 @@ def update_host_config(host_id: str, entry: HostConfigEntry) -> HostConfigEntry:
     path = _require_db_path()
     with _open_db(path) as conn:
         cursor = conn.execute(
-            "UPDATE hosts SET project_root = ?, ssh_address = ?, ssh_username = ?, ssh_key = ?, ssh_port = ? "
+            "UPDATE hosts SET project_root = ?, ssh_address = ?, ssh_username = ?, ssh_key = ?, ssh_port = ?, docker_api_version = ? "
             "WHERE id = ?",
             (
                 entry.project_root.strip(),
@@ -2968,11 +3073,25 @@ def update_host_config(host_id: str, entry: HostConfigEntry) -> HostConfigEntry:
                 entry.ssh_username.strip(),
                 entry.ssh_key.strip(),
                 entry.ssh_port,
+                entry.docker_api_version.strip() or None if entry.docker_api_version else None,
                 host_id,
             ),
         )
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Host not found.")
+    host = HostConfig(
+        host_id=host_id,
+        host=entry.ssh_address.strip(),
+        user=entry.ssh_username.strip(),
+        ssh_key=entry.ssh_key.strip(),
+        project_root=entry.project_root.strip(),
+        port=entry.ssh_port,
+        docker_api_version=entry.docker_api_version.strip() or None if entry.docker_api_version else None,
+    )
+    try:
+        ensure_docker_context(host_id, host)
+    except DockerContextError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     _refresh_config_from_db()
     return entry
 
@@ -2986,6 +3105,7 @@ def delete_host_config(host_id: str) -> SimpleStatusResponse:
             raise HTTPException(status_code=404, detail="Host not found.")
         conn.execute("DELETE FROM backup_state WHERE host_id = ?", (host_id,))
         conn.execute("DELETE FROM project_state WHERE host_id = ?", (host_id,))
+    remove_docker_context(host_id)
     _refresh_config_from_db()
     return SimpleStatusResponse(ok=True)
 
@@ -3139,6 +3259,7 @@ def list_backup_projects(backup_id: str) -> BackupProjectsResponse:
 
 @app.post("/backup/restore", response_model=List[OperationResponse])
 def restore_backup(payload: BackupRestoreRequest) -> List[OperationResponse]:
+    logger.debug("Action restore backup host_id=%s backup_id=%s projects=%s", payload.host_id, payload.backup_id, payload.projects or ([] if payload.project is None else [payload.project]))
     host = _host(payload.host_id)
     path = _require_db_path()
     try:
@@ -3312,6 +3433,7 @@ def list_hosts() -> List[HostInfo]:
 
 @app.get("/hosts/{host_id}/projects", response_model=ProjectListResponse)
 def list_projects(host_id: str) -> ProjectListResponse:
+    logger.debug("Action list projects host_id=%s", host_id)
     host = _host(host_id)
     try:
         project_paths = compose.list_projects(host)
@@ -3325,6 +3447,7 @@ def list_projects(host_id: str) -> ProjectListResponse:
     backup_last_at = {}
     backup_last_success = {}
     backup_last_message = {}
+    backup_last_failure = {}
     backup_cron_override = {}
     for project in projects:
         info = backup_settings.get((host_id, project), {})
@@ -3332,6 +3455,7 @@ def list_projects(host_id: str) -> ProjectListResponse:
         backup_last_at[project] = info.get("last_backup_at")
         backup_last_success[project] = info.get("last_backup_success")
         backup_last_message[project] = info.get("last_backup_message")
+        backup_last_failure[project] = info.get("last_backup_failure")
         backup_cron_override[project] = info.get("cron_override")
 
     return ProjectListResponse(
@@ -3342,12 +3466,14 @@ def list_projects(host_id: str) -> ProjectListResponse:
         backup_last_at=backup_last_at,
         backup_last_success=backup_last_success,
         backup_last_message=backup_last_message,
+        backup_last_failure=backup_last_failure,
         backup_cron_override=backup_cron_override,
     )
 
 
 @app.post("/hosts/{host_id}/sleep", response_model=OperationResponse)
 async def sleep_host(host_id: str) -> OperationResponse:
+    logger.debug("Action sleep host host_id=%s", host_id)
     host = _host(host_id)
     try:
         result = await asyncio.to_thread(_sleep_host_projects, host_id, host)
@@ -3369,6 +3495,7 @@ async def sleep_host(host_id: str) -> OperationResponse:
 
 @app.post("/hosts/{host_id}/wake", response_model=OperationResponse)
 async def wake_host(host_id: str) -> OperationResponse:
+    logger.debug("Action wake host host_id=%s", host_id)
     host = _host(host_id)
     try:
         result = await asyncio.to_thread(_wake_host_projects, host_id, host)
@@ -3466,14 +3593,39 @@ async def service_shell(
 
     cols = int(websocket.query_params.get("cols", "80"))
     rows = int(websocket.query_params.get("rows", "24"))
-    command = f"docker exec -it {shlex.quote(container)} /bin/sh"
     stop_event = threading.Event()
     loop = asyncio.get_running_loop()
-    client = None
-    channel = None
+    master_fd = None
+    process = None
+
     try:
-        client, channel = open_ssh_shell(host, command, timeout=60, cols=cols, rows=rows)
+        master_fd, slave_fd = pty.openpty()
+        _resize_pty(slave_fd, cols, rows)
+        env = docker_env(host_id, host)
+        command = [
+            "docker",
+            "--context",
+            context_name(host_id),
+            "exec",
+            "-it",
+            container,
+            "/bin/sh",
+        ]
+        process = subprocess.Popen(
+            command,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            env=env,
+            close_fds=True,
+        )
+        os.close(slave_fd)
     except Exception as exc:
+        if master_fd is not None:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
         await websocket.send_text(f"error: {exc}")
         await websocket.close()
         return
@@ -3481,21 +3633,18 @@ async def service_shell(
     def reader() -> None:
         try:
             while not stop_event.is_set():
-                made_progress = False
-                if channel and channel.recv_ready():
-                    data = channel.recv(4096)
-                    if data:
-                        asyncio.run_coroutine_threadsafe(websocket.send_bytes(data), loop)
-                        made_progress = True
-                if channel and channel.recv_stderr_ready():
-                    data = channel.recv_stderr(4096)
-                    if data:
-                        asyncio.run_coroutine_threadsafe(websocket.send_bytes(data), loop)
-                        made_progress = True
-                if channel and channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                if process and process.poll() is not None:
                     break
-                if not made_progress:
-                    time.sleep(0.05)
+                rlist, _, _ = select.select([master_fd], [], [], 0.1)
+                if not rlist:
+                    continue
+                try:
+                    data = os.read(master_fd, 4096)
+                except OSError:
+                    break
+                if not data:
+                    break
+                asyncio.run_coroutine_threadsafe(websocket.send_bytes(data), loop)
         except Exception as exc:
             asyncio.run_coroutine_threadsafe(
                 websocket.send_text(f"error: {exc}"), loop
@@ -3519,22 +3668,27 @@ async def service_shell(
                 try:
                     resize_cols = int(payload.get("cols", cols))
                     resize_rows = int(payload.get("rows", rows))
-                    if channel:
-                        channel.resize_pty(width=resize_cols, height=resize_rows)
+                    _resize_pty(master_fd, resize_cols, resize_rows)
                 except (ValueError, TypeError):
                     pass
                 continue
             data = payload.get("data", "")
-            if data and channel:
-                channel.send(data)
+            if data:
+                try:
+                    os.write(master_fd, data.encode())
+                except OSError:
+                    break
     except WebSocketDisconnect:
         stop_event.set()
     finally:
         stop_event.set()
-        if channel:
-            channel.close()
-        if client:
-            client.close()
+        if process and process.poll() is None:
+            process.terminate()
+        if master_fd is not None:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
 
 
 @app.get("/hosts/{host_id}/projects/{project}/logs", response_model=LogsResponse)
@@ -3561,7 +3715,6 @@ async def stream_project_logs(
     service: Optional[str] = Query(None),
 ) -> StreamingResponse:
     host = _host(host_id)
-    command = compose.logs_command(host, project, tail=tail, service=service, follow=True)
 
     async def event_stream():
         queue: asyncio.Queue[Optional[tuple[str, str]]] = asyncio.Queue()
@@ -3569,8 +3722,8 @@ async def stream_project_logs(
 
         def worker() -> None:
             try:
-                for stream, line in stream_ssh_command(
-                    host, command, stop_event, timeout=60
+                for stream, line in compose.stream_project_logs(
+                    host, project, tail, service, stop_event, timeout=60
                 ):
                     asyncio.run_coroutine_threadsafe(
                         queue.put((stream, line)), loop
@@ -3737,19 +3890,14 @@ async def stream_compose_command(
     command = (command or "").strip()
     if not command:
         raise HTTPException(status_code=400, detail="Command is required.")
-    try:
-        command_str = compose.compose_command_string(host, project, command)
-    except Exception as exc:
-        _handle_errors(exc)
-
     async def event_stream():
         queue: asyncio.Queue[Optional[tuple[str, str]]] = asyncio.Queue()
         stop_event = threading.Event()
 
         def worker() -> None:
             try:
-                for stream_name, line in stream_ssh_command(
-                    host, command_str, stop_event, timeout=300, include_exit=True
+                for stream_name, line in compose.stream_compose_command(
+                    host, project, command, stop_event, timeout=300
                 ):
                     asyncio.run_coroutine_threadsafe(
                         queue.put((stream_name, line)), loop
@@ -3884,6 +4032,7 @@ async def stream_project_action(
 ) -> StreamingResponse:
     host = _host(host_id)
     action = action.lower()
+    logger.debug("Action project stream host_id=%s project=%s action=%s", host_id, project, action)
     if action not in ("start", "stop", "restart", "hard_restart", "update"):
         raise HTTPException(status_code=400, detail="Unsupported action")
     stop_event = await _register_action_control(host_id, project, action)
@@ -3929,6 +4078,7 @@ async def stop_project_action(
 ) -> OperationResponse:
     _host(host_id)
     action = action.lower()
+    logger.debug("Action project stop request host_id=%s project=%s action=%s", host_id, project, action)
     if action not in ("start", "stop", "restart", "hard_restart", "update"):
         raise HTTPException(status_code=400, detail="Unsupported action")
     stopped = await _request_action_stop(host_id, project, action)
@@ -3943,6 +4093,7 @@ async def stop_project_action(
 
 @app.post("/hosts/{host_id}/projects/{project}/start", response_model=OperationResponse)
 def start_project(host_id: str, project: str) -> OperationResponse:
+    logger.debug("Action project start host_id=%s project=%s", host_id, project)
     host = _host(host_id)
     try:
         result = compose.start_project(host, project)
@@ -3956,6 +4107,7 @@ def start_project(host_id: str, project: str) -> OperationResponse:
 
 @app.post("/hosts/{host_id}/projects/{project}/stop", response_model=OperationResponse)
 def stop_project(host_id: str, project: str) -> OperationResponse:
+    logger.debug("Action project stop host_id=%s project=%s", host_id, project)
     host = _host(host_id)
     try:
         result = compose.stop_project(host, project)
@@ -3968,6 +4120,7 @@ def stop_project(host_id: str, project: str) -> OperationResponse:
 
 @app.post("/hosts/{host_id}/projects/{project}/restart", response_model=OperationResponse)
 def restart_project(host_id: str, project: str) -> OperationResponse:
+    logger.debug("Action project restart host_id=%s project=%s", host_id, project)
     host = _host(host_id)
     try:
         result = compose.restart_project(host, project)
@@ -3980,6 +4133,7 @@ def restart_project(host_id: str, project: str) -> OperationResponse:
 
 @app.post("/hosts/{host_id}/projects/{project}/hard_restart", response_model=OperationResponse)
 def hard_restart_project(host_id: str, project: str) -> OperationResponse:
+    logger.debug("Action project hard restart host_id=%s project=%s", host_id, project)
     host = _host(host_id)
     try:
         output = compose.hard_restart_project(host, project)
@@ -3993,6 +4147,7 @@ def hard_restart_project(host_id: str, project: str) -> OperationResponse:
 
 @app.post("/hosts/{host_id}/projects/{project}/backup", response_model=OperationResponse)
 def backup_project(host_id: str, project: str) -> OperationResponse:
+    logger.debug("Action project backup host_id=%s project=%s", host_id, project)
     host = _host(host_id)
     backup = _backup_config()
     try:
@@ -4012,6 +4167,7 @@ def backup_project(host_id: str, project: str) -> OperationResponse:
     response_class=StreamingResponse,
 )
 async def backup_project_stream(host_id: str, project: str) -> StreamingResponse:
+    logger.debug("Action project backup stream host_id=%s project=%s", host_id, project)
     host = _host(host_id)
     backup = _backup_config()
 
@@ -4133,6 +4289,7 @@ async def backup_project_stream(host_id: str, project: str) -> StreamingResponse
 )
 async def stop_backup(host_id: str, project: str) -> OperationResponse:
     _host(host_id)
+    logger.debug("Action backup stop request host_id=%s project=%s", host_id, project)
     stopped = await _request_backup_stop(host_id, project)
     message = "Stop requested" if stopped else "No active backup"
     return OperationResponse(
@@ -4163,6 +4320,7 @@ def get_backup_settings(host_id: str, project: str) -> BackupSettingsResponse:
         last_backup_at=info.get("last_backup_at"),
         last_backup_success=info.get("last_backup_success"),
         last_backup_message=info.get("last_backup_message"),
+        last_backup_failure=info.get("last_backup_failure"),
         cron_override=cron_override,
         effective_cron=effective_cron,
         next_run=next_run,
@@ -4204,6 +4362,7 @@ def update_backup_settings(
         last_backup_at=info.get("last_backup_at"),
         last_backup_success=info.get("last_backup_success"),
         last_backup_message=info.get("last_backup_message"),
+        last_backup_failure=info.get("last_backup_failure"),
         cron_override=cron_override,
         effective_cron=effective_cron,
         next_run=next_run,
@@ -4215,6 +4374,7 @@ def update_backup_settings(
     response_model=OperationResponse,
 )
 def start_service(host_id: str, project: str, service: str) -> OperationResponse:
+    logger.debug("Action service start host_id=%s project=%s service=%s", host_id, project, service)
     host = _host(host_id)
     try:
         result = compose.start_service(host, project, service)
@@ -4237,6 +4397,7 @@ async def stream_service_action(
 ) -> StreamingResponse:
     host = _host(host_id)
     action = action.lower()
+    logger.debug("Action service stream host_id=%s project=%s service=%s action=%s", host_id, project, service, action)
     if action not in ("start", "stop", "restart", "hard_restart"):
         raise HTTPException(status_code=400, detail="Unsupported action")
     stop_event = await _register_service_action_control(
@@ -4281,6 +4442,7 @@ async def stop_service_action(
 ) -> OperationResponse:
     _host(host_id)
     action = action.lower()
+    logger.debug("Action service stop request host_id=%s project=%s service=%s action=%s", host_id, project, service, action)
     if action not in ("start", "stop", "restart", "hard_restart"):
         raise HTTPException(status_code=400, detail="Unsupported action")
     stopped = await _request_service_action_stop(host_id, project, service, action)
@@ -4298,6 +4460,7 @@ async def stop_service_action(
     response_model=OperationResponse,
 )
 def stop_service(host_id: str, project: str, service: str) -> OperationResponse:
+    logger.debug("Action service stop host_id=%s project=%s service=%s", host_id, project, service)
     host = _host(host_id)
     try:
         result = compose.stop_service(host, project, service)
@@ -4316,6 +4479,7 @@ def stop_service(host_id: str, project: str, service: str) -> OperationResponse:
     response_model=OperationResponse,
 )
 def restart_service(host_id: str, project: str, service: str) -> OperationResponse:
+    logger.debug("Action service restart host_id=%s project=%s service=%s", host_id, project, service)
     host = _host(host_id)
     try:
         result = compose.restart_service(host, project, service)
@@ -4331,6 +4495,7 @@ def restart_service(host_id: str, project: str, service: str) -> OperationRespon
 
 @app.get("/hosts/{host_id}/projects/{project}/updates", response_model=UpdateCheckResponse)
 def check_updates(host_id: str, project: str) -> UpdateCheckResponse:
+    logger.debug("Action project check updates host_id=%s project=%s", host_id, project)
     host = _host(host_id)
     try:
         supported, updates_available, details, per_service = compose.check_updates(
@@ -4350,6 +4515,7 @@ def check_updates(host_id: str, project: str) -> UpdateCheckResponse:
 
 @app.post("/hosts/{host_id}/projects/{project}/update", response_model=UpdateApplyResponse)
 def apply_updates(host_id: str, project: str) -> UpdateApplyResponse:
+    logger.debug("Action project apply updates host_id=%s project=%s", host_id, project)
     host = _host(host_id)
     try:
         updates_applied, output = compose.apply_updates(host, project)
@@ -4400,6 +4566,7 @@ async def refresh_project_state_endpoint(
     host_id: str, project: str
 ) -> StateRefreshResponse:
     _host(host_id)
+    logger.debug("Action refresh project state host_id=%s project=%s", host_id, project)
     refreshed_at = await _refresh_project_state(host_id, project)
     return StateRefreshResponse(refreshed_at=refreshed_at)
 
@@ -4480,5 +4647,6 @@ async def update_backup_schedule(
 @app.post("/hosts/{host_id}/state/refresh", response_model=StateRefreshResponse)
 async def refresh_host_state_endpoint(host_id: str) -> StateRefreshResponse:
     _host(host_id)
+    logger.debug("Action refresh host state host_id=%s", host_id)
     refreshed_at = await _refresh_status_state([host_id])
     return StateRefreshResponse(refreshed_at=refreshed_at)

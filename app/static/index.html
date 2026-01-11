@@ -163,7 +163,7 @@
             </thead>
             <tbody id="projectList">
               <tr class="list-row empty">
-                <td colspan="5">Select a host to see projects.</td>
+                <td colspan="6">Select a host to see projects.</td>
               </tr>
             </tbody>
           </table>
@@ -330,6 +330,10 @@
           <label class="control">
             SSH port
             <input type="number" min="1" max="65535" class="host-port" value="22" />
+          </label>
+          <label class="control">
+            Docker API version
+            <input type="text" class="host-api-version" placeholder="1.43 (optional)" />
           </label>
           <label class="control span-2">
             SSH private key
@@ -560,7 +564,7 @@
               <div class="detail-value" id="projectDetailsBackup"></div>
             </div>
             <div class="detail-item">
-              <div class="detail-label">Backup success</div>
+              <div class="detail-label">Backup status</div>
               <div class="detail-value" id="projectDetailsBackupSuccess"></div>
             </div>
             <div class="detail-item">
@@ -663,6 +667,7 @@
                   <tr>
                     <th>Name</th>
                     <th>Last run</th>
+                    <th>Last status</th>
                     <th>Next run</th>
                     <th class="center">Enabled</th>
                     <th class="center">Override</th>
@@ -670,7 +675,7 @@
                 </thead>
                 <tbody id="scheduleSummaryBody">
                   <tr class="empty">
-                    <td colspan="5">Loading...</td>
+                    <td colspan="6">Loading...</td>
                   </tr>
                 </tbody>
               </table>
