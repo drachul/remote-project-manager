@@ -4175,6 +4175,108 @@ function updateLocalServiceStatus(hostId, projectName, serviceName, status) {
   project.refreshed_at = now;
 }
 
+function _isContainerRunning(container) {
+  const state = (container?.state || "").toLowerCase();
+  const status = (container?.status || "").toLowerCase();
+  return state === "running" || status.startsWith("up");
+}
+
+function _deriveServiceStatus(containers) {
+  if (!containers.length) {
+    return "unknown";
+  }
+  let runningCount = 0;
+  containers.forEach((container) => {
+    if (_isContainerRunning(container)) {
+      runningCount += 1;
+    }
+  });
+  if (runningCount === containers.length) {
+    return "up";
+  }
+  if (runningCount === 0) {
+    return "down";
+  }
+  return "degraded";
+}
+
+function _deriveServiceStatuses(containers) {
+  const grouped = {};
+  containers.forEach((container) => {
+    const service = container?.service || container?.name || "unknown";
+    if (!grouped[service]) {
+      grouped[service] = [];
+    }
+    grouped[service].push(container);
+  });
+  const statuses = {};
+  Object.entries(grouped).forEach(([service, items]) => {
+    statuses[service] = _deriveServiceStatus(items);
+  });
+  return statuses;
+}
+
+function updateLocalProjectStatus(hostId, projectName, status, options = {}) {
+  if (!state.stateSnapshot?.hosts) {
+    return;
+  }
+  const host = state.stateSnapshot.hosts.find((item) => item.host_id === hostId);
+  if (!host) {
+    return;
+  }
+  if (!Array.isArray(host.projects)) {
+    host.projects = [];
+  }
+  let project = host.projects.find((item) => item.project === projectName);
+  if (!project) {
+    project = { project: projectName, services: [] };
+    host.projects.push(project);
+  }
+  const now = new Date().toISOString();
+  const containers = Array.isArray(status?.containers) ? status.containers : [];
+  const serviceStatuses = _deriveServiceStatuses(containers);
+  const services = Array.isArray(project.services) ? project.services : [];
+  Object.entries(serviceStatuses).forEach(([serviceName, serviceStatus]) => {
+    let service = services.find((item) => item.id === serviceName);
+    if (!service) {
+      service = { id: serviceName };
+      services.push(service);
+    }
+    service.status = serviceStatus;
+    service.refreshed_at = now;
+  });
+  if (!Object.keys(serviceStatuses).length && status?.overall_status === "down") {
+    services.forEach((service) => {
+      service.status = "down";
+      service.refreshed_at = now;
+    });
+  }
+  project.services = services;
+  const statusValues = Object.values(serviceStatuses);
+  project.overall_status = status?.overall_status || deriveOverallStatus(statusValues);
+  project.refreshed_at = now;
+  if (options.clearUpdates) {
+    project.updates_available = false;
+  }
+}
+
+async function refreshProjectStatusAfterAction(hostId, projectName, options = {}) {
+  try {
+    await api.post(`/hosts/${hostId}/projects/${projectName}/state/refresh`);
+  } catch (err) {
+    console.error("Project refresh failed", err);
+  }
+  try {
+    const status = await api.get(`/hosts/${hostId}/projects/${projectName}/status`);
+    updateLocalProjectStatus(hostId, projectName, status, options);
+    if (options.render !== false) {
+      renderProjectList();
+    }
+  } catch (err) {
+    console.error("Project status load failed", err);
+  }
+}
+
 
 function renderHostList() {
   hostList.innerHTML = "";
@@ -5228,6 +5330,38 @@ async function runServiceAction(
   }
 }
 
+
+function bulkActionParticiple(action) {
+  switch (action) {
+    case "start":
+      return "Starting";
+    case "stop":
+      return "Stopping";
+    case "restart":
+      return "Restarting";
+    case "update":
+      return "Updating";
+    case "backup":
+      return "Backing up";
+    case "sleep":
+      return "Sleeping";
+    case "wake":
+      return "Waking";
+    case "restore":
+      return "Restoring";
+    case "hard_restart":
+      return "Hard restarting";
+    default:
+      return `Running ${action}`;
+  }
+}
+
+function formatBulkProgressText(action, current, total, currentTarget) {
+  const label = bulkActionParticiple(action);
+  const target = currentTarget ? ` ${currentTarget}` : "";
+  return `${label}${target} (${current}/${total})`;
+}
+
 function setBulkProgress(action, current, total, currentTarget = "") {
   if (!total) {
     bulkProgress.classList.add("hidden");
@@ -5235,18 +5369,12 @@ function setBulkProgress(action, current, total, currentTarget = "") {
     bulkProgressText.textContent = "";
     return;
   }
-  let label = action === "update" ? "Updating" : `Running ${action}`;
-  if (action === "sleep") {
-    label = "Sleeping";
-  } else if (action === "wake") {
-    label = "Waking";
-  } else if (action === "restore") {
-    label = "Restoring";
-  } else if (action === "hard_restart") {
-    label = "Hard restarting";
-  }
-  const targetText = currentTarget ? ` • ${currentTarget}` : "";
-  bulkProgressText.textContent = `${label} ${current}/${total}${targetText}`;
+  bulkProgressText.textContent = formatBulkProgressText(
+    action,
+    current,
+    total,
+    currentTarget
+  );
   bulkProgressBar.style.width = `${Math.round((current / total) * 100)}%`;
   bulkProgress.classList.remove("hidden");
 }
@@ -5300,7 +5428,6 @@ async function runBulkAction(action, event) {
   if (stateStatus) {
     stateStatus.textContent = `Running ${actionLabel} on ${selected.length} projects...`;
   }
-  setBulkProgress(resolvedAction, 0, selected.length);
 
   const failures = [];
   let completed = 0;
@@ -5316,6 +5443,10 @@ async function runBulkAction(action, event) {
       row.classList.add("working");
     }
     let entryFailed = false;
+    const currentIndex = completed + 1;
+    setBulkProgress(resolvedAction, currentIndex, selected.length, currentTarget);
+    const actionForButton = resolvedAction === "hard_restart" ? "restart" : resolvedAction;
+    const shouldRefreshAction = ["start", "stop", "restart", "hard_restart", "update"].includes(resolvedAction);
     if (["start", "stop", "restart", "hard_restart", "update", "backup"].includes(resolvedAction)) {
       setActionProgress(entry.key, resolvedAction, true);
       const actionBtn = row?.querySelector(
@@ -5348,18 +5479,26 @@ async function runBulkAction(action, event) {
                 cancelledBadge.classList.toggle("hidden", !payload.stopped);
               }
             }
-            const finalLabel = payload.stopped ? "Backup stopped" : "Backup complete";
-            bulkProgressText.textContent = `${finalLabel} • ${currentTarget}`;
+            bulkProgressText.textContent = formatBulkProgressText(
+              resolvedAction,
+              completed + 1,
+              selected.length,
+              currentTarget
+            );
             bulkProgressBar.style.width = `${Math.round(
               ((completed + 1) / selected.length) * 100
             )}%`;
             return;
           }
-          const stepLabel = formatBackupStep(payload.step, payload.message);
           const stepIndex = backupStepIndex(payload.step);
           const fraction =
             (completed + stepIndex / totalSteps) / selected.length;
-          bulkProgressText.textContent = `Backing up ${completed + 1}/${selected.length} • ${currentTarget} • ${stepLabel}`;
+          bulkProgressText.textContent = formatBulkProgressText(
+            resolvedAction,
+            completed + 1,
+            selected.length,
+            currentTarget
+          );
           bulkProgressBar.style.width = `${Math.round(fraction * 100)}%`;
           bulkProgress.classList.remove("hidden");
         });
@@ -5372,13 +5511,19 @@ async function runBulkAction(action, event) {
       entryFailed = true;
       failures.push(`${getProjectDisplayName(entry.hostId, entry.projectName)}: ${err.message}`);
     }
+    const shouldRefresh = !entryFailed && shouldRefreshAction;
+    if (shouldRefresh) {
+      await refreshProjectStatusAfterAction(entry.hostId, entry.projectName, {
+        clearUpdates: resolvedAction === "update",
+        render: false,
+      });
+    }
     completed += 1;
     if (resolvedAction === "backup") {
       setBulkProgress("backup", completed, selected.length, currentTarget);
     } else {
       setBulkProgress(resolvedAction, completed, selected.length, currentTarget);
     }
-    const actionForButton = resolvedAction === "hard_restart" ? "restart" : resolvedAction;
     if (["start", "stop", "restart", "hard_restart", "update", "backup"].includes(resolvedAction)) {
       setActionProgress(entry.key, resolvedAction, false);
       const actionBtn = row?.querySelector(
@@ -5391,14 +5536,11 @@ async function runBulkAction(action, event) {
     if (row) {
       row.classList.remove("working");
     }
+    if (shouldRefresh) {
+      renderProjectList();
+    }
   }
 
-  if (resolvedAction === "update") {
-    await loadState();
-  } else {
-    const hostsToRefresh = Array.from(new Set(selected.map((entry) => entry.hostId)));
-    await refreshHosts(hostsToRefresh);
-  }
   buttons.forEach((btn) => {
     btn.disabled = false;
   });
