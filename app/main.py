@@ -75,6 +75,7 @@ from .models import (
     UpdateApplyResponse,
     UpdateCheckResponse,
     AuthTokenRequest,
+    PasswordChangeRequest,
     UserConfigEntry,
     UserCreateRequest,
     UserUpdateRequest,
@@ -118,6 +119,11 @@ TOKEN_CLEANUP_INTERVAL_SECONDS = 60
 DB_OPEN_ATTEMPTS = int(os.getenv("DB_OPEN_ATTEMPTS", "5"))
 DB_OPEN_DELAY_SECONDS = float(os.getenv("DB_OPEN_DELAY_SECONDS", "0.2"))
 FD_LIMIT_TARGET = int(os.getenv("APP_FD_LIMIT", "4096"))
+
+ROLE_ADMIN = "admin"
+ROLE_POWER = "power"
+ROLE_NORMAL = "normal"
+VALID_ROLES = {ROLE_ADMIN, ROLE_POWER, ROLE_NORMAL}
 FD_TRACK_INTERVAL_SECONDS = int(os.getenv("APP_FD_TRACK_INTERVAL", "300"))
 FD_TRACK_TOP = int(os.getenv("APP_FD_TRACK_TOP", "0"))
 
@@ -211,6 +217,7 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     try:
         _verify_request_token(request)
+        _authorize_request(request)
     except HTTPException as exc:
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     return await call_next(request)
@@ -300,6 +307,92 @@ def _skip_auth(path: str, method: str) -> bool:
     return False
 
 
+def _normalize_role(value: Optional[str]) -> str:
+    role = (value or "").strip().lower()
+    if role in VALID_ROLES:
+        return role
+    return ROLE_NORMAL
+
+
+def _get_request_role(request: Request) -> str:
+    return _normalize_role(getattr(request.state, "user_role", ROLE_NORMAL))
+
+
+def _required_roles_for_request(path: str, method: str) -> set[str]:
+    method = method.upper()
+    roles_all = {ROLE_ADMIN, ROLE_POWER, ROLE_NORMAL}
+    roles_power = {ROLE_ADMIN, ROLE_POWER}
+    roles_admin = {ROLE_ADMIN}
+
+    if path.startswith("/config/"):
+        return roles_admin
+    if path in ("/state/interval", "/update/interval", "/config/token-expiry"):
+        return roles_admin
+    if path.startswith("/backup/schedule"):
+        return roles_admin
+    if path.startswith("/backup/targets") or path == "/backup/restore":
+        return roles_admin
+    if path == "/events/status":
+        return roles_admin
+    if path == "/compose/convert":
+        return roles_admin
+    if path.startswith("/hosts/"):
+        parts = [part for part in path.strip("/").split("/") if part]
+        if len(parts) >= 3 and parts[2] in ("sleep", "wake"):
+            return roles_power
+        if len(parts) >= 3 and parts[2] == "state":
+            if len(parts) >= 4 and parts[3] == "refresh":
+                return roles_power
+            return roles_all
+        if len(parts) >= 3 and parts[2] == "projects":
+            if len(parts) == 3:
+                if method == "POST":
+                    return roles_admin
+                return roles_all
+            if len(parts) == 4 and parts[3] == "validate":
+                return roles_admin
+            if len(parts) >= 4:
+                if len(parts) == 4:
+                    if method == "DELETE":
+                        return roles_admin
+                    return roles_all
+                action = parts[4]
+                if action == "compose":
+                    if len(parts) >= 6 and parts[5] == "command":
+                        return roles_power
+                    return roles_admin
+                if action == "updates":
+                    return roles_power
+                if action == "update":
+                    return roles_power
+                if action in ("start", "stop", "restart", "hard_restart"):
+                    return roles_power
+                if action == "backup":
+                    return roles_admin
+                if action in ("actions", "services"):
+                    return roles_power
+                if action == "logs":
+                    return roles_all
+                if action in ("status", "stats", "ports"):
+                    return roles_all
+        return roles_all
+    return roles_all
+
+
+def _authorize_request(request: Request) -> None:
+    required = _required_roles_for_request(request.url.path, request.method)
+    role = _get_request_role(request)
+    if role in required:
+        return
+    if required == {ROLE_ADMIN}:
+        detail = "Admin access required."
+    elif required == {ROLE_ADMIN, ROLE_POWER}:
+        detail = "Action requires admin or power user."
+    else:
+        detail = "Insufficient permissions."
+    raise HTTPException(status_code=403, detail=detail)
+
+
 def _parse_token_payload(token: str) -> dict:
     padded = token + "=" * (-len(token) % 4)
     try:
@@ -345,7 +438,7 @@ def _extract_bearer_token(header: Optional[str]) -> str:
     return token
 
 
-def _verify_token_value(token: str) -> str:
+def _verify_token_value(token: str) -> tuple[str, str]:
     payload = _parse_token_payload(token)
     username = payload.get("username")
     token_id = payload.get("id")
@@ -358,23 +451,25 @@ def _verify_token_value(token: str) -> str:
     path = _require_db_path()
     with _open_db(path) as conn:
         user_row = conn.execute(
-            "SELECT password FROM users WHERE username = ?", (username,)
+            "SELECT password, role FROM users WHERE username = ?", (username,)
         ).fetchone()
         if not user_row:
             raise HTTPException(status_code=401, detail="User not found.")
+        role = _normalize_role(user_row[1])
         token_row = conn.execute(
             "SELECT 1 FROM tokens WHERE id = ? AND expiration = ?",
             (token_id, expiration_value),
         ).fetchone()
         if not token_row:
             raise HTTPException(status_code=401, detail="Token not recognized.")
-    return username
+    return username, role
 
 
 def _verify_request_token(request: Request) -> None:
     token = _extract_bearer_token(request.headers.get("authorization"))
-    username = _verify_token_value(token)
+    username, role = _verify_token_value(token)
     request.state.username = username
+    request.state.user_role = role
 
 
 def _state_interval_seconds() -> int:
@@ -739,7 +834,8 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
                 "CREATE TABLE IF NOT EXISTS users ("
                 "username TEXT PRIMARY KEY, "
                 "password TEXT NOT NULL, "
-                "last_login DATETIME"
+                "last_login DATETIME, "
+                "role TEXT NOT NULL DEFAULT 'normal'"
                 ")"
             )
             conn.execute(
@@ -768,14 +864,23 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
             _ensure_column(conn, "backup_state", "cron_override", "TEXT")
             _ensure_column(conn, "project_state", "sleeping", "BOOLEAN DEFAULT 0")
             _ensure_column(conn, "backups", "enabled", "BOOLEAN DEFAULT 1")
+            _ensure_column(conn, "users", "role", "TEXT NOT NULL DEFAULT 'normal'")
+            conn.execute(
+                "UPDATE users SET role = ? WHERE role IS NULL OR role = ''",
+                (ROLE_NORMAL,),
+            )
+            conn.execute(
+                "UPDATE users SET role = ? WHERE username = ?",
+                (ROLE_ADMIN, "admin"),
+            )
             admin_exists = conn.execute(
                 "SELECT 1 FROM users WHERE username = ?", ("admin",)
             ).fetchone()
             if not admin_exists:
                 admin_hash = _hash_password(_secret_seed(), "changemenow")
                 conn.execute(
-                    "INSERT INTO users (username, password, last_login) VALUES (?, ?, ?)",
-                    ("admin", admin_hash, None),
+                    "INSERT INTO users (username, password, last_login, role) VALUES (?, ?, ?, ?)",
+                    ("admin", admin_hash, None, ROLE_ADMIN),
                 )
     except sqlite3.OperationalError as exc:
         _log_db_path_diagnostics(path)
@@ -1146,13 +1251,15 @@ def _token_expiry_seconds() -> int:
     return app.state.token_expiry_seconds
 
 
-def _get_user_password(username: str) -> Optional[str]:
+def _get_user_credentials(username: str) -> tuple[Optional[str], str]:
     path = _require_db_path()
     with _open_db(path) as conn:
         row = conn.execute(
-            "SELECT password FROM users WHERE username = ?", (username,)
+            "SELECT password, role FROM users WHERE username = ?", (username,)
         ).fetchone()
-    return row[0] if row else None
+    if not row:
+        return None, ROLE_NORMAL
+    return row[0], _normalize_role(row[1])
 
 
 def _set_token_expiry(seconds: int) -> int:
@@ -3262,12 +3369,13 @@ def list_user_configs() -> List[UserConfigEntry]:
     with _open_db(path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT username, last_login FROM users ORDER BY username"
+            "SELECT username, last_login, role FROM users ORDER BY username"
         ).fetchall()
     return [
         UserConfigEntry(
             username=row["username"],
             last_login=_parse_db_datetime(row["last_login"]),
+            role=_normalize_role(row["role"]),
         )
         for row in rows
     ]
@@ -3280,17 +3388,20 @@ def create_user_config(entry: UserCreateRequest) -> UserConfigEntry:
         raise HTTPException(status_code=400, detail="Username is required.")
     if not entry.password:
         raise HTTPException(status_code=400, detail="Password is required.")
+    role = _normalize_role(entry.role)
+    if username.lower() == "admin":
+        role = ROLE_ADMIN
     password_hash = _hash_password(_secret_seed(), entry.password)
     path = _require_db_path()
     try:
         with _open_db(path) as conn:
             conn.execute(
-                "INSERT INTO users (username, password, last_login) VALUES (?, ?, ?)",
-                (username, password_hash, None),
+                "INSERT INTO users (username, password, last_login, role) VALUES (?, ?, ?, ?)",
+                (username, password_hash, None, role),
             )
     except sqlite3.IntegrityError as exc:
         raise HTTPException(status_code=409, detail="User already exists.") from exc
-    return UserConfigEntry(username=username, last_login=None)
+    return UserConfigEntry(username=username, last_login=None, role=role)
 
 
 @app.put("/config/users/{username}", response_model=UserConfigEntry)
@@ -3298,22 +3409,42 @@ def update_user_config(username: str, entry: UserUpdateRequest) -> UserConfigEnt
     username = username.strip()
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
-    if entry.password is None or entry.password == "":
-        raise HTTPException(status_code=400, detail="Password is required.")
-    password_hash = _hash_password(_secret_seed(), entry.password)
+    password_hash = None
+    if entry.password:
+        password_hash = _hash_password(_secret_seed(), entry.password)
+    role = None
+    if entry.role is not None:
+        role = _normalize_role(entry.role)
+        if username.lower() == "admin":
+            role = ROLE_ADMIN
+    if password_hash is None and role is None:
+        raise HTTPException(status_code=400, detail="Password or role is required.")
     path = _require_db_path()
     with _open_db(path) as conn:
+        updates = []
+        params = []
+        if password_hash is not None:
+            updates.append("password = ?")
+            params.append(password_hash)
+        if role is not None:
+            updates.append("role = ?")
+            params.append(role)
+        params.append(username)
         result = conn.execute(
-            "UPDATE users SET password = ? WHERE username = ?",
-            (password_hash, username),
+            f"UPDATE users SET {', '.join(updates)} WHERE username = ?",
+            params,
         )
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="User not found.")
         row = conn.execute(
-            "SELECT last_login FROM users WHERE username = ?", (username,)
+            "SELECT last_login, role FROM users WHERE username = ?", (username,)
         ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found.")
     return UserConfigEntry(
-        username=username, last_login=_parse_db_datetime(row[0] if row else None)
+        username=username,
+        last_login=_parse_db_datetime(row[0]),
+        role=_normalize_role(row[1]),
     )
 
 
@@ -3505,13 +3636,17 @@ async def service_shell(
         await websocket.close(code=4401)
         return
     try:
-        username = _verify_token_value(token)
+        username, role = _verify_token_value(token)
     except HTTPException:
         await websocket.close(code=4401)
+        return
+    if role not in (ROLE_ADMIN, ROLE_POWER):
+        await websocket.close(code=4403)
         return
 
     await websocket.accept()
     websocket.scope["username"] = username
+    websocket.scope["user_role"] = role
     host = _host(host_id)
     try:
         container = compose.service_container(host, project, service)
@@ -3758,7 +3893,7 @@ def create_auth_token(payload: AuthTokenRequest) -> str:
     username = payload.username.strip()
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
-    stored_password = _get_user_password(username)
+    stored_password, role = _get_user_credentials(username)
     if not stored_password:
         raise HTTPException(status_code=401, detail="Invalid username or auth.")
     provided = _hash_password(_secret_seed(), payload.password)
@@ -3780,9 +3915,33 @@ def create_auth_token(payload: AuthTokenRequest) -> str:
         "username": username,
         "id": token_id,
         "expiration": expiration.isoformat(),
+        "role": role,
     }
     encoded = base64.b64encode(json.dumps(token_payload, separators=(",", ":")).encode()).decode()
     return encoded
+
+
+@app.post("/auth/password", response_model=SimpleStatusResponse)
+def change_password(request: Request, payload: PasswordChangeRequest) -> SimpleStatusResponse:
+    username = getattr(request.state, "username", "")
+    if not username:
+        raise HTTPException(status_code=401, detail="Unauthorized.")
+    if not payload.current_password or not payload.new_password:
+        raise HTTPException(status_code=400, detail="Current and new password are required.")
+    stored_password, _ = _get_user_credentials(username)
+    if not stored_password:
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
+    provided = _hash_password(_secret_seed(), payload.current_password)
+    if not hmac.compare_digest(stored_password, provided):
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
+    new_hash = _hash_password(_secret_seed(), payload.new_password)
+    path = _require_db_path()
+    with _open_db(path) as conn:
+        conn.execute(
+            "UPDATE users SET password = ? WHERE username = ?",
+            (new_hash, username),
+        )
+    return SimpleStatusResponse(ok=True)
 
 
 @app.get(

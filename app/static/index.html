@@ -31,9 +31,42 @@
           </div>
         </div>
         <div class="controls">
-          <button class="btn subtle" id="openConfig">Configuration</button>
-          <button class="btn subtle" id="openEventStatus">Events</button>
-          <button class="btn ghost" id="logoutBtn">Log out</button>
+          <div class="user-row">
+            <button
+              class="user-badge"
+              id="currentUserBadge"
+              type="button"
+              aria-haspopup="true"
+              aria-expanded="false"
+            >
+              <span class="user-badge-name" id="currentUserName">--</span>
+            </button>
+            <button
+              class="btn subtle"
+              id="openConfig"
+              aria-label="Configuration"
+              title="Configuration"
+            >
+              <span class="material-symbols-outlined action-icon">settings</span>
+            </button>
+            <div class="user-menu hidden" id="userMenu">
+              <div class="user-menu-title">Account</div>
+              <label class="control">
+                Current password
+                <input type="password" id="userCurrentPassword" autocomplete="current-password" />
+              </label>
+              <label class="control">
+                New password
+                <input type="password" id="userNewPassword" autocomplete="new-password" />
+              </label>
+              <div class="user-menu-actions">
+                <button class="btn subtle" id="userChangePassword" type="button">Change password</button>
+                <button class="btn ghost" id="userLogout" type="button">Log out</button>
+              </div>
+              <div class="user-menu-status" id="userMenuStatus"></div>
+            </div>
+          </div>
+          
         </div>
       </header>
 
@@ -57,9 +90,15 @@
               <div class="panel-sub" id="projectCount">0 projects</div>
             </div>
             <div class="panel-actions">
-              <button class="btn subtle" id="openBackupSchedule">Backup schedule</button>
-              <button class="btn subtle" id="openRestoreModal">Restore</button>
-              <button class="btn subtle" id="openCreateProject">Create</button>
+              <button class="btn subtle" id="openBackupSchedule" aria-label="Backup schedule" title="Backup schedule">
+                <span class="material-symbols-outlined action-icon">event</span>
+              </button>
+              <button class="btn subtle" id="openRestoreModal" aria-label="Restore" title="Restore">
+                <span class="material-symbols-outlined action-icon">cloud_download</span>
+              </button>
+              <button class="btn subtle" id="openCreateProject" aria-label="Create project" title="Create project">
+                <span class="material-symbols-outlined action-icon">note_add</span>
+              </button>
             </div>
           </div>
           <div class="project-toolbar">
@@ -72,18 +111,31 @@
                 autocomplete="off"
               />
             </label>
-            <button class="btn subtle filter-clear" id="clearProjectFilters" type="button">
-              Clear filters
+            <button class="btn subtle filter-clear" id="clearProjectFilters" type="button" aria-label="Clear filters" title="Clear filters">
+              <span class="material-symbols-outlined action-icon">filter_alt_off</span>
               <span class="filter-count hidden" id="projectFilterCount">0</span>
             </button>
           </div>
           
-          <div class="bulk-actions hidden" id="bulkActions">
-            <button class="btn ghost bulk-action" data-bulk-action="start">Start</button>
-            <button class="btn ghost bulk-action" data-bulk-action="stop">Stop</button>
-            <button class="btn ghost bulk-action" data-bulk-action="restart">Restart</button>
-            <button class="btn ghost bulk-action" data-bulk-action="update">Update</button>
-            <button class="btn ghost bulk-action" data-bulk-action="backup">Backup</button>
+          <div class="bulk-actions-wrap hidden" id="bulkActionsWrap">
+            <div class="bulk-actions-label">Bulk Actions</div>
+            <div class="bulk-actions" id="bulkActions">
+              <button class="btn ghost bulk-action" data-bulk-action="start" aria-label="Start" title="Start">
+                <span class="material-symbols-outlined action-icon">play_arrow</span>
+              </button>
+              <button class="btn ghost bulk-action" data-bulk-action="stop" aria-label="Stop" title="Stop">
+                <span class="material-symbols-outlined action-icon">stop</span>
+              </button>
+              <button class="btn ghost bulk-action" data-bulk-action="restart" aria-label="Restart" title="Restart">
+                <span class="material-symbols-outlined action-icon">restart_alt</span>
+              </button>
+              <button class="btn ghost bulk-action" data-bulk-action="update" aria-label="Update" title="Update">
+                <span class="material-symbols-outlined action-icon">system_update_alt</span>
+              </button>
+              <button class="btn ghost bulk-action" data-bulk-action="backup" aria-label="Backup" title="Backup">
+                <span class="material-symbols-outlined action-icon">backup</span>
+              </button>
+            </div>
           </div>
           <div class="progress hidden" id="bulkProgress">
             <div class="progress-text" id="bulkProgressText">Updating 0/0</div>
@@ -217,7 +269,7 @@
             <span class="material-symbols-outlined action-icon">light_mode</span>
           </button>
           <button class="btn subtle host-action action-ready refresh-host" aria-label="Refresh project statuses" title="Refresh project statuses">
-            <span class="material-symbols-outlined action-icon">refresh</span>
+            <span class="material-symbols-outlined action-icon">sync_desktop</span>
           </button>
           <button class="btn subtle host-action action-ready scan-host" aria-label="Scan projects" title="Scan projects on host">
             <span class="material-symbols-outlined action-icon">scan</span>
@@ -272,7 +324,7 @@
                   <span class="material-symbols-outlined action-icon action-label">stop</span>
                 </button>
                 <button class="btn ghost project-action" data-action="restart" aria-label="Restart project" title="Restart project (docker compose restart)">
-                  <span class="material-symbols-outlined action-icon action-label">replay</span>
+                  <span class="material-symbols-outlined action-icon action-label">restart_alt</span>
                 </button>
                 <button class="btn ghost project-action" data-action="update" aria-label="Update project" title="Update project images">
                   <span class="material-symbols-outlined action-icon action-label">system_update_alt</span>
@@ -281,7 +333,7 @@
                   <span class="material-symbols-outlined action-icon action-label">backup</span>
                 </button>
                 <button class="btn ghost project-action" data-action="refresh" aria-label="Refresh project status" title="Refresh project status">
-                  <span class="material-symbols-outlined action-icon action-label">refresh</span>
+                  <span class="material-symbols-outlined action-icon action-label">sync_desktop</span>
                 </button>
                 <button class="btn ghost logs" aria-label="Logs" title="View logs">
                   <span class="material-symbols-outlined action-icon">article</span>
@@ -410,6 +462,14 @@
           <label class="control">
             Username
             <input type="text" class="user-name" placeholder="admin" />
+          </label>
+          <label class="control">
+            Role
+            <select class="user-role">
+              <option value="admin">Admin</option>
+              <option value="power">Power</option>
+              <option value="normal">Normal</option>
+            </select>
           </label>
           <label class="control">
             Password
@@ -629,33 +689,6 @@
       </div>
     </div>
 
-    <div class="modal hidden" id="eventStatusModal">
-      <div class="modal-backdrop"></div>
-      <div class="modal-card">
-        <header class="modal-header">
-          <div>
-            <div class="modal-title">Background events</div>
-            <div class="modal-subtitle">Status of timed background tasks.</div>
-          </div>
-          <button class="modal-close" id="closeEventStatusModal" aria-label="Close">
-            <span class="material-symbols-outlined">close</span>
-          </button>
-        </header>
-        <div class="modal-body event-status-body">
-          <div class="event-status-header">
-            <div class="event-status-updated" id="eventStatusUpdated">Updated: --</div>
-            <div class="event-status-actions">
-              <button class="btn ghost event-auto-toggle" id="toggleEventAuto">Auto refresh: On</button>
-              <button class="btn subtle" id="refreshEventStatus">Refresh</button>
-            </div>
-          </div>
-          <div class="event-status-list" id="eventStatusList">
-            <div class="empty">Loading...</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
     <div class="modal hidden" id="backupScheduleModal">
       <div class="modal-backdrop"></div>
       <div class="modal-card">
@@ -827,6 +860,7 @@
             <button class="config-tab active" data-tab="hosts">Hosts</button>
             <button class="config-tab" data-tab="users">Users</button>
             <button class="config-tab" data-tab="backups">Backups</button>
+            <button class="config-tab" data-tab="events">Events</button>
             <button class="config-tab" data-tab="misc">Misc</button>
           </div>
           <div class="config-tab-panel active" data-tab-panel="hosts">
@@ -863,6 +897,28 @@
                 <button class="btn subtle align-right" id="addBackupConfig">Add</button>
               </div>
               <div class="config-list" id="backupConfigList"></div>
+            </section>
+          </div>
+          <div class="config-tab-panel" data-tab-panel="events">
+            <section class="config-section">
+              <div class="config-section-head">
+                <div>
+                  <div class="config-section-title">Background events</div>
+                  <div class="config-section-sub">Status of timed background tasks.</div>
+                </div>
+              </div>
+              <div class="event-status-body">
+                <div class="event-status-header">
+                  <div class="event-status-updated" id="eventStatusUpdated">Updated: --</div>
+                  <div class="event-status-actions">
+                    <button class="btn ghost event-auto-toggle" id="toggleEventAuto">Auto refresh: On</button>
+                    <button class="btn subtle" id="refreshEventStatus">Refresh</button>
+                  </div>
+                </div>
+                <div class="event-status-list" id="eventStatusList">
+                  <div class="empty">Loading...</div>
+                </div>
+              </div>
             </section>
           </div>
           <div class="config-tab-panel" data-tab-panel="misc">

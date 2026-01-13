@@ -15,6 +15,7 @@ const projectFilterName = document.getElementById("projectFilterName");
 const clearProjectFiltersBtn = document.getElementById("clearProjectFilters");
 const projectFilterCount = document.getElementById("projectFilterCount");
 const bulkActions = document.getElementById("bulkActions");
+const bulkActionsWrap = document.getElementById("bulkActionsWrap");
 const bulkProgress = document.getElementById("bulkProgress");
 const bulkProgressText = document.getElementById("bulkProgressText");
 const bulkProgressBar = document.getElementById("bulkProgressBar");
@@ -95,7 +96,14 @@ const authUsername = document.getElementById("authUsername");
 const authPassword = document.getElementById("authPassword");
 const authSubmit = document.getElementById("authSubmit");
 const authStatus = document.getElementById("authStatus");
-const logoutBtn = document.getElementById("logoutBtn");
+const currentUserBadge = document.getElementById("currentUserBadge");
+const currentUserLabel = document.getElementById("currentUserName");
+const userMenu = document.getElementById("userMenu");
+const userCurrentPassword = document.getElementById("userCurrentPassword");
+const userNewPassword = document.getElementById("userNewPassword");
+const userChangePasswordBtn = document.getElementById("userChangePassword");
+const userMenuStatus = document.getElementById("userMenuStatus");
+const logoutBtn = document.getElementById("userLogout");
 const openConfigBtn = document.getElementById("openConfig");
 const openEventStatusBtn = document.getElementById("openEventStatus");
 const eventStatusModal = document.getElementById("eventStatusModal");
@@ -183,6 +191,10 @@ function updateBulkRestartLabel(active) {
   button.textContent = active ? "Hard Restart" : button.dataset.baseLabel;
 }
 
+const ROLE_ADMIN = "admin";
+const ROLE_POWER = "power";
+const ROLE_NORMAL = "normal";
+
 const state = {
   hosts: [],
   stateSnapshot: null,
@@ -191,6 +203,8 @@ const state = {
   updatesEnabled: true,
   backupTargetsAvailable: true,
   authToken: null,
+  authUser: "",
+  userRole: "normal",
   initialized: false,
   configTabsInit: false,
   selectedProjects: new Set(),
@@ -620,6 +634,215 @@ function clearCookieValue(name) {
   document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
 }
 
+function updateAuthDisplay() {
+  if (!currentUserLabel) {
+    return;
+  }
+  const name = state.authUser || "--";
+  currentUserLabel.textContent = name;
+}
+
+function setUserMenuStatus(message, isError = false) {
+  if (!userMenuStatus) {
+    return;
+  }
+  userMenuStatus.textContent = message || "";
+  userMenuStatus.classList.toggle("error", Boolean(isError));
+}
+
+function openUserMenu() {
+  if (!userMenu) {
+    return;
+  }
+  userMenu.classList.remove("hidden");
+  if (currentUserBadge) {
+    currentUserBadge.setAttribute("aria-expanded", "true");
+  }
+}
+
+function closeUserMenu() {
+  if (!userMenu) {
+    return;
+  }
+  userMenu.classList.add("hidden");
+  if (currentUserBadge) {
+    currentUserBadge.setAttribute("aria-expanded", "false");
+  }
+  setUserMenuStatus("");
+}
+
+function toggleUserMenu() {
+  if (!userMenu) {
+    return;
+  }
+  const willOpen = userMenu.classList.contains("hidden");
+  if (willOpen) {
+    openUserMenu();
+  } else {
+    closeUserMenu();
+  }
+}
+
+async function submitPasswordChange() {
+  if (!userCurrentPassword || !userNewPassword) {
+    return;
+  }
+  const currentPassword = userCurrentPassword.value;
+  const newPassword = userNewPassword.value;
+  if (!currentPassword || !newPassword) {
+    setUserMenuStatus("Enter current and new password.", true);
+    return;
+  }
+  setUserMenuStatus("Updating password...");
+  try {
+    await api.post("/auth/password", {
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
+    userCurrentPassword.value = "";
+    userNewPassword.value = "";
+    setUserMenuStatus("Password updated.");
+  } catch (err) {
+    setUserMenuStatus(`Password update failed: ${err.message}`, true);
+  }
+}
+
+function resolveRoleFromPayload(payload) {
+  const role = String(payload?.role || "").toLowerCase();
+  if (role === ROLE_ADMIN || role === ROLE_POWER || role === ROLE_NORMAL) {
+    return role;
+  }
+  const username = String(payload?.username || "").toLowerCase();
+  if (username === "admin") {
+    return ROLE_ADMIN;
+  }
+  return ROLE_NORMAL;
+}
+
+function isAdminRole() {
+  return state.userRole === ROLE_ADMIN;
+}
+
+function isPowerRole() {
+  return state.userRole === ROLE_ADMIN || state.userRole === ROLE_POWER;
+}
+
+function canManageProjects() {
+  return isPowerRole();
+}
+
+function canEditCompose() {
+  return isAdminRole();
+}
+
+function canDeleteProject() {
+  return isAdminRole();
+}
+
+function canAccessConfig() {
+  return isAdminRole();
+}
+
+function canAccessEvents() {
+  return isAdminRole();
+}
+
+function canAccessBackupSchedule() {
+  return isAdminRole();
+}
+
+function canRestoreProjects() {
+  return isAdminRole();
+}
+
+function setButtonAccess(button, allowed, message, options = {}) {
+  if (!button) {
+    return;
+  }
+  const hideOnDeny = options.hideOnDeny === true;
+  if (!button.dataset.defaultTitle) {
+    button.dataset.defaultTitle = button.title || "";
+  }
+  if (!hideOnDeny && button.dataset.roleHidden === "true") {
+    button.classList.remove("role-hidden");
+    button.dataset.roleHidden = "";
+  }
+  if (hideOnDeny) {
+    if (!allowed) {
+      button.classList.add("role-hidden");
+      button.dataset.roleHidden = "true";
+    } else if (button.dataset.roleHidden === "true") {
+      button.classList.remove("role-hidden");
+      button.dataset.roleHidden = "";
+    }
+  }
+  if (allowed) {
+    button.disabled = false;
+    button.dataset.forceDisabled = "";
+    button.title = button.dataset.defaultTitle || button.title;
+  } else {
+    button.disabled = true;
+    button.dataset.forceDisabled = "true";
+    if (message) {
+      button.title = message;
+    }
+  }
+}
+
+function updateBulkActionPermissions() {
+  if (!bulkActions || !bulkActionsWrap) {
+    return;
+  }
+  const allowed = canManageProjects();
+  const buttons = bulkActions.querySelectorAll(".bulk-action");
+  buttons.forEach((button) => {
+    const action = button.dataset.bulkAction;
+    if (!allowed) {
+      setButtonAccess(button, false, "Requires admin or power user.", {
+        hideOnDeny: true,
+      });
+      return;
+    }
+    if (action === "backup" && !isAdminRole()) {
+      setButtonAccess(button, false, "Admin access required.", {
+        hideOnDeny: true,
+      });
+      return;
+    }
+    if (action === "backup" && !state.backupTargetsAvailable) {
+      setButtonAccess(button, false, "No enabled backup targets.");
+      return;
+    }
+    setButtonAccess(button, true);
+  });
+}
+
+function updateRolePermissions() {
+  const adminAllowed = canAccessConfig();
+  setButtonAccess(openConfigBtn, adminAllowed, "Admin access required.", {
+    hideOnDeny: true,
+  });
+  setButtonAccess(openEventStatusBtn, canAccessEvents(), "Admin access required.", {
+    hideOnDeny: true,
+  });
+  setButtonAccess(
+    openBackupScheduleBtn,
+    canAccessBackupSchedule(),
+    "Admin access required.",
+    { hideOnDeny: true }
+  );
+  setButtonAccess(openCreateProjectBtn, adminAllowed, "Admin access required.", {
+    hideOnDeny: true,
+  });
+  setButtonAccess(openRestoreModalBtn, canRestoreProjects(), "Admin access required.", {
+    hideOnDeny: true,
+  });
+  updateBulkActionPermissions();
+  if (state.initialized) {
+    renderLists();
+  }
+}
+
 function decodeToken(token) {
   if (!token) {
     return null;
@@ -689,16 +912,25 @@ function setAuthToken(token) {
     return;
   }
   state.authToken = token;
+  state.authUser = payload.username || "";
+  state.userRole = resolveRoleFromPayload(payload);
   state.authExpiredNotified = false;
   const expiresAt = new Date(payload.expiration);
   setCookieValue(AUTH_COOKIE_NAME, token, expiresAt);
   scheduleAuthExpiry(payload);
+  updateAuthDisplay();
+  updateRolePermissions();
 }
 
 function clearAuthToken() {
+  closeUserMenu();
   state.authToken = null;
+  state.authUser = "";
+  state.userRole = ROLE_NORMAL;
   clearAuthExpiryTimeout();
   clearCookieValue(AUTH_COOKIE_NAME);
+  updateAuthDisplay();
+  updateRolePermissions();
 }
 
 function loadAuthFromCookie() {
@@ -712,8 +944,12 @@ function loadAuthFromCookie() {
     return false;
   }
   state.authToken = token;
+  state.authUser = payload.username || "";
+  state.userRole = resolveRoleFromPayload(payload);
   state.authExpiredNotified = false;
   scheduleAuthExpiry(payload);
+  updateAuthDisplay();
+  updateRolePermissions();
   return true;
 }
 
@@ -750,6 +986,10 @@ function getAuthHeader() {
   if (!payload || tokenExpired(payload)) {
     handleAuthExpired();
     return "";
+  }
+  if (!state.authUser) {
+    state.authUser = payload.username || "";
+    updateAuthDisplay();
   }
   return `Bearer ${state.authToken}`;
 }
@@ -2637,28 +2877,38 @@ function stopEventStatusAutoRefresh() {
   eventStatusState.autoRefreshId = null;
 }
 
-function openEventStatusModal() {
-  if (!eventStatusModal) {
+function setEventStatusActive(active) {
+  if (active) {
+    updateEventAutoButton();
+    loadEventStatus();
+    startEventStatusTimer();
+    if (eventStatusState.autoRefreshEnabled) {
+      startEventStatusAutoRefresh();
+    }
     return;
-  }
-  eventStatusModal.classList.remove("hidden");
-  updateEventAutoButton();
-  loadEventStatus();
-  startEventStatusTimer();
-  if (eventStatusState.autoRefreshEnabled) {
-    startEventStatusAutoRefresh();
-  }
-}
-
-function closeEventStatusModal() {
-  if (eventStatusModal) {
-    eventStatusModal.classList.add("hidden");
   }
   stopEventStatusTimer();
   stopEventStatusAutoRefresh();
 }
 
+function openEventStatusModal() {
+  if (!canAccessEvents()) {
+    showToast("Admin access required.", "error");
+    return;
+  }
+  openConfigModal();
+  setActiveConfigTab("events");
+}
+
+function closeEventStatusModal() {
+  setEventStatusActive(false);
+}
+
 async function openBackupScheduleModal() {
+  if (!canAccessBackupSchedule()) {
+    showToast("Admin access required.", "error");
+    return;
+  }
   if (!backupScheduleModal) {
     return;
   }
@@ -2867,6 +3117,10 @@ async function loadRestoreProjects() {
 }
 
 async function openRestoreModal() {
+  if (!canRestoreProjects()) {
+    showToast("Admin or power access required.", "error");
+    return;
+  }
   if (!restoreModal) {
     return;
   }
@@ -3138,6 +3392,10 @@ function populateCreateProjectHosts() {
 }
 
 function openCreateProjectModal() {
+  if (!canAccessConfig()) {
+    showToast("Admin access required.", "error");
+    return;
+  }
   if (!createProjectModal) {
     return;
   }
@@ -3333,11 +3591,17 @@ function setConfigStatus(message, variant = "") {
 }
 
 function openConfigModal() {
+  if (!canAccessConfig()) {
+    showToast("Admin access required.", "error");
+    return;
+  }
   if (!configModal) {
     return;
   }
   configModal.classList.remove("hidden");
   initConfigTabs();
+  const activeTab = getActiveConfigTab() || "hosts";
+  setActiveConfigTab(activeTab);
   loadConfigEntries();
 }
 
@@ -3346,6 +3610,25 @@ function closeConfigModal() {
     return;
   }
   configModal.classList.add("hidden");
+  setEventStatusActive(false);
+}
+
+function getActiveConfigTab() {
+  const active = document.querySelector(".config-tab.active");
+  return active ? active.dataset.tab : null;
+}
+
+function setActiveConfigTab(target) {
+  if (!target) {
+    return;
+  }
+  configTabs.forEach((button) => {
+    button.classList.toggle("active", button.dataset.tab === target);
+  });
+  configTabPanels.forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.tabPanel === target);
+  });
+  setEventStatusActive(target === "events");
 }
 
 function initConfigTabs() {
@@ -3354,13 +3637,7 @@ function initConfigTabs() {
   }
   configTabs.forEach((tab) => {
     tab.addEventListener("click", () => {
-      const target = tab.dataset.tab;
-      configTabs.forEach((button) => {
-        button.classList.toggle("active", button === tab);
-      });
-      configTabPanels.forEach((panel) => {
-        panel.classList.toggle("active", panel.dataset.tabPanel === target);
-      });
+      setActiveConfigTab(tab.dataset.tab);
     });
   });
   state.configTabsInit = true;
@@ -3485,9 +3762,13 @@ function buildUserConfigEntry(user, isNew) {
   const entry = userConfigTemplate.content.firstElementChild.cloneNode(true);
   entry.dataset.new = isNew ? "true" : "false";
   const usernameInput = entry.querySelector(".user-name");
+  const roleInput = entry.querySelector(".user-role");
   const passwordInput = entry.querySelector(".user-password");
   const lastLogin = entry.querySelector(".user-last-login");
   usernameInput.value = user?.username || "";
+  if (roleInput) {
+    roleInput.value = user?.role || "normal";
+  }
   passwordInput.value = "";
   if (!isNew) {
     usernameInput.disabled = true;
@@ -3501,6 +3782,10 @@ function buildUserConfigEntry(user, isNew) {
   saveBtn.addEventListener("click", () => saveUserConfig(entry));
   const usernameValue = usernameInput.value.trim();
   const isAdmin = usernameValue.toLowerCase() == "admin";
+  if (roleInput && isAdmin) {
+    roleInput.value = "admin";
+    roleInput.disabled = true;
+  }
   if (deleteBtn) {
     deleteBtn.disabled = isAdmin;
     deleteBtn.dataset.forceDisabled = isAdmin ? "true" : "";
@@ -3550,6 +3835,7 @@ function readUserConfig(entry) {
   return {
     username: entry.querySelector(".user-name").value.trim(),
     password: entry.querySelector(".user-password").value,
+    role: entry.querySelector(".user-role")?.value || "normal",
   };
 }
 
@@ -3667,7 +3953,7 @@ async function saveUserConfig(entry) {
     setConfigStatus("Username is required.", "error");
     return;
   }
-  if (!payload.password) {
+  if (isNew && !payload.password) {
     setConfigStatus("Password is required.", "error");
     return;
   }
@@ -3677,12 +3963,19 @@ async function saveUserConfig(entry) {
     const url = isNew
       ? "/config/users"
       : `/config/users/${encodeURIComponent(payload.username)}`;
+    const updatePayload = { role: payload.role };
+    if (payload.password) {
+      updatePayload.password = payload.password;
+    }
     const data = isNew
       ? await api.post(url, payload)
-      : await api.put(url, { password: payload.password });
+      : await api.put(url, updatePayload);
     entry.dataset.new = "false";
     entry.querySelector(".user-name").disabled = true;
     entry.querySelector(".user-password").value = "";
+    if (data.role && entry.querySelector(".user-role")) {
+      entry.querySelector(".user-role").value = data.role;
+    }
     if (data.last_login && entry.querySelector(".user-last-login")) {
       entry.querySelector(".user-last-login").textContent = `Last login: ${formatTimestamp(
         data.last_login
@@ -4513,11 +4806,19 @@ function renderHostList() {
     const projectCountText = host.projects?.length ?? Object.keys(host.project_paths || {}).length;
     row.querySelector(".host-meta").textContent = `${host.user}@${host.host}:${host.port} • ${projectCountText} projects`;
 
+    const allowHostActions = canManageProjects();
+
     const refreshBtn = row.querySelector(".refresh-host");
     refreshBtn.addEventListener("click", () =>
       runHostQuickAction(refreshBtn, host.host_id, "refresh", () =>
         refreshHost(host.host_id)
       )
+    );
+    setButtonAccess(
+      refreshBtn,
+      allowHostActions,
+      "Requires admin or power user.",
+      { hideOnDeny: true }
     );
     const scanBtn = row.querySelector(".scan-host");
     scanBtn.addEventListener("click", () =>
@@ -4525,6 +4826,9 @@ function renderHostList() {
         scanHostProjects(host.host_id)
       )
     );
+    setButtonAccess(scanBtn, allowHostActions, "Requires admin or power user.", {
+      hideOnDeny: true,
+    });
     const sleepBtn = row.querySelector(".sleep-host");
     const wakeBtn = row.querySelector(".wake-host");
     const hostState = stateByHost[host.host_id];
@@ -4550,12 +4854,18 @@ function renderHostList() {
       sleepBtn.addEventListener("click", () =>
         runHostAction(sleepBtn, host.host_id, "sleep")
       );
+      setButtonAccess(sleepBtn, allowHostActions, "Requires admin or power user.", {
+        hideOnDeny: true,
+      });
     }
     if (wakeBtn) {
       wakeBtn.classList.toggle("hidden", !hasSleeping);
       wakeBtn.addEventListener("click", () =>
         runHostAction(wakeBtn, host.host_id, "wake")
       );
+      setButtonAccess(wakeBtn, allowHostActions, "Requires admin or power user.", {
+        hideOnDeny: true,
+      });
     }
 
     const hostActions = getHostActionProgress(host.host_id);
@@ -4619,6 +4929,11 @@ function renderProjectList() {
       const row = projectRowTemplate.content.firstElementChild.cloneNode(true);
       row.dataset.projectKey = entry.key;
       const restoreLocked = state.restoreInProgress && state.restoreLockedProjects.has(entry.key);
+      const allowProjectActions = canManageProjects();
+      const allowBackupAction = isAdminRole();
+      const allowComposeEdit = canEditCompose();
+      const allowDeleteProject = canDeleteProject();
+      const allowComposeCommand = canManageProjects();
       const checkbox = row.querySelector(".project-checkbox");
     checkbox.checked = state.selectedProjects.has(entry.key);
     checkbox.addEventListener("change", () => {
@@ -4648,13 +4963,17 @@ function renderProjectList() {
 
     const deleteBtn = row.querySelector(".project-delete");
     if (deleteBtn) {
-      deleteBtn.disabled = restoreLocked;
-      deleteBtn.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        closeAllActionMenus();
-        openDeleteProjectModal(entry.hostId, entry.projectName);
-      });
+      if (!allowDeleteProject) {
+        deleteBtn.classList.add("hidden");
+      } else {
+        deleteBtn.disabled = restoreLocked;
+        deleteBtn.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          closeAllActionMenus();
+          openDeleteProjectModal(entry.hostId, entry.projectName);
+        });
+      }
     }
 
     const detailsBtn = row.querySelector(".project-details");
@@ -4754,43 +5073,64 @@ function renderProjectList() {
 
     if (startBtn) {
       startBtn.classList.add("action-ready");
-      startBtn.dataset.forceDisabled = restoreLocked ? "true" : "";
+      startBtn.dataset.forceDisabled =
+        restoreLocked || !allowProjectActions ? "true" : "";
+      if (!allowProjectActions) {
+        startBtn.disabled = true;
+      }
       setActionRunning(startBtn, startRunning);
-      startBtn.classList.toggle("hidden", !showStart);
+      startBtn.classList.toggle("hidden", !allowProjectActions || !showStart);
     }
     if (stopBtn) {
       stopBtn.classList.add("action-ready");
-      stopBtn.dataset.forceDisabled = restoreLocked ? "true" : "";
+      stopBtn.dataset.forceDisabled =
+        restoreLocked || !allowProjectActions ? "true" : "";
+      if (!allowProjectActions) {
+        stopBtn.disabled = true;
+      }
       setActionRunning(stopBtn, stopRunning);
-      stopBtn.classList.toggle("hidden", !showStop);
+      stopBtn.classList.toggle("hidden", !allowProjectActions || !showStop);
     }
     if (restartBtn) {
       restartBtn.classList.add("action-ready");
-      restartBtn.dataset.forceDisabled = restoreLocked ? "true" : "";
+      restartBtn.dataset.forceDisabled =
+        restoreLocked || !allowProjectActions ? "true" : "";
+      if (!allowProjectActions) {
+        restartBtn.disabled = true;
+      }
       setActionRunning(restartBtn, restartRunning);
-      restartBtn.classList.toggle("hidden", !showRestart);
+      restartBtn.classList.toggle("hidden", !allowProjectActions || !showRestart);
     }
     if (updateBtn) {
       updateBtn.classList.add("action-ready");
-      updateBtn.dataset.forceDisabled = restoreLocked ? "true" : "";
+      updateBtn.dataset.forceDisabled =
+        restoreLocked || !allowProjectActions ? "true" : "";
+      if (!allowProjectActions) {
+        updateBtn.disabled = true;
+      }
       setActionRunning(updateBtn, updateRunning);
-      updateBtn.classList.remove("hidden");
+      updateBtn.classList.toggle("hidden", !allowProjectActions);
     }
     if (backupBtn) {
       backupBtn.classList.add("action-ready");
-      const forceDisabled = restoreLocked || !state.backupTargetsAvailable;
+      const forceDisabled =
+        restoreLocked || !state.backupTargetsAvailable || !allowBackupAction;
       backupBtn.dataset.forceDisabled = forceDisabled ? "true" : "";
       if (forceDisabled) {
         backupBtn.disabled = true;
       }
       setActionRunning(backupBtn, backupRunning);
-      backupBtn.classList.remove("hidden");
+      backupBtn.classList.toggle("hidden", !allowBackupAction);
     }
     if (refreshBtn) {
       refreshBtn.classList.add("action-ready");
-      refreshBtn.dataset.forceDisabled = restoreLocked ? "true" : "";
+      refreshBtn.dataset.forceDisabled =
+        restoreLocked || !allowProjectActions ? "true" : "";
+      if (!allowProjectActions) {
+        refreshBtn.disabled = true;
+      }
       setActionRunning(refreshBtn, refreshRunning);
-      refreshBtn.classList.remove("hidden");
+      refreshBtn.classList.toggle("hidden", !allowProjectActions);
     }
 
     const servicesSummary = row.querySelector(".services-summary");
@@ -4864,6 +5204,7 @@ function renderProjectList() {
           item.classList.remove("action-running");
         }
         const serviceRunning = info.className === "up" || info.className === "degraded";
+        const allowServiceActions = allowProjectActions;
         const startRunning = serviceActions.has("start");
         const stopRunning = serviceActions.has("stop");
         const restartRunning =
@@ -4907,7 +5248,7 @@ function renderProjectList() {
           "stop"
         );
         const restartBtn = createServiceActionButton(
-          "replay",
+          "restart_alt",
           "Restart service (docker compose restart)",
           "restart"
         );
@@ -4920,9 +5261,9 @@ function renderProjectList() {
         setActionRunning(stopBtn, stopRunning);
         setActionRunning(restartBtn, restartRunning);
 
-        startBtn.classList.toggle("hidden", !showStart);
-        stopBtn.classList.toggle("hidden", !showStop);
-        restartBtn.classList.toggle("hidden", !showRestart);
+        startBtn.classList.toggle("hidden", !allowServiceActions || !showStart);
+        stopBtn.classList.toggle("hidden", !allowServiceActions || !showStop);
+        restartBtn.classList.toggle("hidden", !allowServiceActions || !showRestart);
 
         const shellBtn = document.createElement("button");
         shellBtn.className = "btn ghost service-action";
@@ -4932,7 +5273,9 @@ function renderProjectList() {
         shellIcon.className = "material-symbols-outlined action-icon";
         shellIcon.textContent = "terminal";
         shellBtn.appendChild(shellIcon);
-        if (restoreLocked) {
+        if (!allowServiceActions) {
+          shellBtn.classList.add("hidden");
+        } else if (restoreLocked) {
           shellBtn.disabled = true;
         }
         shellBtn.addEventListener("click", () =>
@@ -5001,21 +5344,31 @@ function renderProjectList() {
     });
 
     const composeBtn = row.querySelector(".compose");
-    composeBtn.disabled = restoreLocked;
-    composeBtn.addEventListener("click", (event) => {
-      event.stopPropagation();
-      closeAllActionMenus();
-      openComposeModal(entry.hostId, entry.projectName);
-    });
+    if (composeBtn) {
+      if (!allowComposeEdit) {
+        composeBtn.classList.add("hidden");
+      } else {
+        composeBtn.disabled = restoreLocked;
+        composeBtn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          closeAllActionMenus();
+          openComposeModal(entry.hostId, entry.projectName);
+        });
+      }
+    }
 
     const commandBtn = row.querySelector(".compose-command");
     if (commandBtn) {
-      commandBtn.disabled = restoreLocked;
-      commandBtn.addEventListener("click", (event) => {
-        event.stopPropagation();
-        closeAllActionMenus();
-        openCommandModal(entry.hostId, entry.projectName);
-      });
+      if (!allowComposeCommand) {
+        commandBtn.classList.add("hidden");
+      } else {
+        commandBtn.disabled = restoreLocked;
+        commandBtn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          closeAllActionMenus();
+          openCommandModal(entry.hostId, entry.projectName);
+        });
+      }
     }
 
     projectList.appendChild(row);
@@ -5313,6 +5666,14 @@ function clearProjectFilters() {
 
 
 async function runProjectAction(button, hostId, projectName, action) {
+  if (!canManageProjects()) {
+    alert("Insufficient permissions for project actions.");
+    return;
+  }
+  if (action === "backup" && !isAdminRole()) {
+    alert("Admin access required for backups.");
+    return;
+  }
   const row = button.closest(".project-row");
   const label = formatActionLabel(action);
   const originalLabel = button.dataset.originalLabel || getActionLabel(button) || label;
@@ -5465,6 +5826,10 @@ async function runServiceAction(
   action,
   event
 ) {
+  if (!canManageProjects()) {
+    alert("Insufficient permissions for service actions.");
+    return;
+  }
   const serviceItem = button.closest(".service-item");
   const row = button.closest(".project-row");
   const isRunning = button.dataset.actionRunning === "true";
@@ -5592,33 +5957,32 @@ function setBulkProgress(action, current, total, currentTarget = "") {
 
 
 function updateBulkVisibility() {
-  if (!bulkActions) {
+  if (!bulkActions || !bulkActionsWrap) {
+    return;
+  }
+  if (!canManageProjects()) {
+    bulkActionsWrap.classList.add("hidden");
+    setBulkProgress("", 0, 0);
     return;
   }
   const selectedCount = countSelectedVisible(getVisibleProjectEntries());
   if (selectedCount > 1) {
-    bulkActions.classList.remove("hidden");
+    bulkActionsWrap.classList.remove("hidden");
   } else {
-    bulkActions.classList.add("hidden");
+    bulkActionsWrap.classList.add("hidden");
     setBulkProgress("", 0, 0);
   }
 }
 
 function updateBulkBackupAvailability() {
-  if (!bulkActions) {
-    return;
-  }
-  const backupBtn = bulkActions.querySelector(
-    '.bulk-action[data-bulk-action="backup"]'
-  );
-  if (backupBtn) {
-    const disabled = !state.backupTargetsAvailable;
-    backupBtn.disabled = disabled;
-    backupBtn.dataset.forceDisabled = disabled ? "true" : "";
-  }
+  updateBulkActionPermissions();
 }
 
 async function runBulkAction(action, event) {
+  if (!canManageProjects()) {
+    alert("Insufficient permissions for bulk actions.");
+    return;
+  }
   const selected = getSelectedProjectEntries();
   if (!selected.length) {
     alert("Select one or more projects first.");
@@ -5626,6 +5990,10 @@ async function runBulkAction(action, event) {
   }
   const resolvedAction =
     action === "restart" && event?.shiftKey ? "hard_restart" : action;
+  if (resolvedAction === "backup" && !isAdminRole()) {
+    alert("Admin access required for backups.");
+    return;
+  }
   if (resolvedAction === "backup" && !state.backupTargetsAvailable) {
     alert("No enabled backup targets.");
     return;
@@ -5809,6 +6177,10 @@ async function scanHostProjects(hostId) {
 }
 
 async function runHostAction(button, hostId, action) {
+  if (!canManageProjects()) {
+    alert("Insufficient permissions for host actions.");
+    return;
+  }
   const label = action === "sleep" ? "Sleep" : "Wake";
   const runningLabel = action === "sleep" ? "Sleeping..." : "Waking...";
   const isRunning = button.dataset.actionRunning === "true";
@@ -5840,6 +6212,10 @@ async function runHostAction(button, hostId, action) {
 }
 
 async function runHostQuickAction(button, hostId, action, handler) {
+  if (!canManageProjects()) {
+    alert("Insufficient permissions for host actions.");
+    return;
+  }
   const isRunning = button.dataset.actionRunning === "true";
   if (isRunning) {
     return;
@@ -5929,6 +6305,7 @@ async function initApp(forceReload = false) {
     await loadBackupTargetsAvailability();
     await loadState();
     state.initialized = true;
+    updateRolePermissions();
   } catch (err) {
     hostList.innerHTML = "";
     const hostError = document.createElement("li");
@@ -6170,6 +6547,9 @@ document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") {
     return;
   }
+  if (userMenu && !userMenu.classList.contains("hidden")) {
+    closeUserMenu();
+  }
   if (!composeModal.classList.contains("hidden")) {
     closeComposeModal();
   }
@@ -6199,9 +6579,6 @@ document.addEventListener("keydown", (event) => {
   }
   if (configModal && !configModal.classList.contains("hidden")) {
     closeConfigModal();
-  }
-  if (eventStatusModal && !eventStatusModal.classList.contains("hidden")) {
-    closeEventStatusModal();
   }
 });
 
@@ -6250,9 +6627,6 @@ if (runRestoreBtn) {
 if (openEventStatusBtn) {
   openEventStatusBtn.addEventListener("click", openEventStatusModal);
 }
-if (closeEventStatusModalBtn) {
-  closeEventStatusModalBtn.addEventListener("click", closeEventStatusModal);
-}
 if (refreshEventStatusBtn) {
   refreshEventStatusBtn.addEventListener("click", () => {
     loadEventStatus();
@@ -6269,11 +6643,6 @@ if (toggleEventAutoBtn) {
       stopEventStatusAutoRefresh();
     }
   });
-}
-if (eventStatusModal) {
-  eventStatusModal
-    .querySelector(".modal-backdrop")
-    .addEventListener("click", closeEventStatusModal);
 }
 if (openCreateProjectBtn) {
   openCreateProjectBtn.addEventListener("click", openCreateProjectModal);
@@ -6297,8 +6666,25 @@ if (authPassword) {
     }
   });
 }
+if (currentUserBadge) {
+  currentUserBadge.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleUserMenu();
+  });
+}
+if (userChangePasswordBtn) {
+  userChangePasswordBtn.addEventListener("click", submitPasswordChange);
+}
+if (userNewPassword) {
+  userNewPassword.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      submitPasswordChange();
+    }
+  });
+}
 if (logoutBtn) {
   logoutBtn.addEventListener("click", () => {
+    closeUserMenu();
     clearAuthToken();
     showAuthModal("Signed out.");
   });
@@ -6408,6 +6794,15 @@ if (!state.filterMenuListenerBound) {
   document.addEventListener("click", () => closeAllFilterMenus());
   state.filterMenuListenerBound = true;
 }
+document.addEventListener("click", (event) => {
+  if (!userMenu || userMenu.classList.contains("hidden")) {
+    return;
+  }
+  if (event.target.closest("#userMenu") || event.target.closest("#currentUserBadge")) {
+    return;
+  }
+  closeUserMenu();
+});
 if (headerFilterHosts) {
   headerFilterHosts.addEventListener("change", () => {
     updateProjectFilterState();

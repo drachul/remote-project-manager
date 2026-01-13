@@ -134,18 +134,26 @@ class AuthTokenRequest(BaseModel):
     password: str
 
 
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class UserConfigEntry(BaseModel):
     username: str
     last_login: Optional[datetime] = None
+    role: str = "normal"
 
 
 class UserCreateRequest(BaseModel):
     username: str
     password: str
+    role: Optional[str] = None
 
 
 class UserUpdateRequest(BaseModel):
     password: Optional[str] = None
+    role: Optional[str] = None
 
 
 class RunToComposeRequest(BaseModel):

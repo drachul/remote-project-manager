@@ -81,13 +81,19 @@ Defaults stored in the database on first initialization:
 
 Token creation flow:
 1. Client sends `{ "username": "<user>", "password": "<password>" }` to `/auth/token`.
-2. Server hashes the password with `SECRET_SEED`, validates it, inserts a token row, and returns a base64-encoded JSON payload: `{ "username", "id", "expiration" }`.
+2. Server hashes the password with `SECRET_SEED`, validates it, inserts a token row, and returns a base64-encoded JSON payload: `{ "username", "id", "expiration", "role" }`.
 
 Token validation:
 - Bearer token is base64-decoded to JSON.
 - `username` must exist in `users`.
 - `expiration` must be in the future.
 - `id`/`expiration` must match a row in `tokens`.
+
+
+User roles:
+- **admin**: full access to all configuration, backup/restore, and project actions.
+- **power**: can run project/service actions (start/stop/restart/update/refresh) but cannot delete projects, edit compose files, or run backups/restore.
+- **normal**: read-only access to status, stats, and logs.
 
 ## State refresh & updates
 
@@ -101,6 +107,7 @@ Open `http://localhost:8000/` to access the management dashboard. The UI provide
 - Backup configuration, scheduling, restore workflows, and background events.
 - Configuration tabs for hosts, backups, users, and misc intervals.
 - Status, update, and project details visibility.
+- UI actions are enabled/disabled based on the signed-in user role.
 
 ### UI overview
 
