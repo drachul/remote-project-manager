@@ -3322,7 +3322,7 @@ def delete_user_config(username: str) -> SimpleStatusResponse:
     username = username.strip()
     if not username:
         raise HTTPException(status_code=400, detail="Username is required.")
-    if username == "admin":
+    if username.lower() == "admin":
         raise HTTPException(status_code=403, detail="Admin user cannot be deleted.")
     path = _require_db_path()
     with _open_db(path) as conn:
