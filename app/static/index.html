@@ -6,6 +6,10 @@
     <title>Remote Project Manager</title>
     <link rel="icon" type="image/png" href="/static/rpm-icon.png" />
     <link rel="stylesheet" href="/static/vendor/xterm/xterm.css" />
+    <link rel="stylesheet" href="/static/vendor/codemirror/codemirror.min.css" />
+    <link rel="stylesheet" href="/static/vendor/codemirror/theme/material-darker.min.css" />
+    <link rel="stylesheet" href="/static/vendor/codemirror/addon/lint/lint.min.css" />
+    <link rel="stylesheet" href="/static/vendor/codemirror/addon/merge/merge.min.css" />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -297,19 +301,15 @@
         </td>
       </tr>
     </template>
-
     <template id="hostConfigTemplate">
-      <div class="config-entry">
+      <div class="config-entry host-entry">
         <div class="config-entry-head">
-          <div>
-            <div class="config-entry-title">Host</div>
-            <div class="config-entry-sub">SSH target for compose projects.</div>
-          </div>
-          <div class="config-entry-actions">
-            <button class="btn subtle config-save">Save</button>
-            <button class="btn ghost config-delete">Delete</button>
-          </div>
+          <button class="config-collapse" type="button" aria-label="Toggle host details">
+            <span class="material-symbols-outlined">expand_more</span>
+          </button>
+          <div class="config-entry-title host-title"></div>
         </div>
+        <div class="host-body">
         <div class="config-grid">
           <label class="control">
             ID
@@ -330,28 +330,33 @@
           <label class="control">
             SSH port
             <input type="number" min="1" max="65535" class="host-port" value="22" />
-          </label>          <label class="control span-2">
+          </label>
+          <label class="control span-2">
             SSH private key
             <textarea class="host-key" rows="5" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
           </label>
         </div>
+        <div class="config-entry-footer">
+          <div class="config-entry-actions align-right">
+            <button class="btn subtle config-save">Save</button>
+            <button class="btn ghost danger-text config-delete">Delete</button>
+          </div>
+        </div>
+        </div>
       </div>
     </template>
-
     <template id="backupConfigTemplate">
-      <div class="config-entry">
+      <div class="config-entry backup-entry">
         <div class="config-entry-head">
-          <div>
-            <div class="config-entry-title">Backup target</div>
-            <div class="config-entry-sub">Where rsync backups are sent.</div>
-          </div>
-          <div class="config-entry-actions">
-            <label class="toggle">
+          <button class="config-collapse" type="button" aria-label="Toggle backup details">
+            <span class="material-symbols-outlined">expand_more</span>
+          </button>
+          <div class="config-entry-title backup-title"></div>
+          <div class="config-entry-actions align-right">
+            <label class="toggle backup-toggle">
               <input type="checkbox" class="backup-enabled" />
               <span>Enabled</span>
             </label>
-            <button class="btn subtle config-save">Save</button>
-            <button class="btn ghost config-delete">Delete</button>
           </div>
         </div>
         <div class="config-grid">
@@ -387,20 +392,19 @@
             <input type="text" class="backup-base-path" placeholder="/backups/compose" />
           </label>
         </div>
+        <div class="config-entry-footer">
+          <div class="config-entry-actions align-right">
+            <button class="btn subtle config-save">Save</button>
+            <button class="btn ghost danger-text config-delete">Delete</button>
+          </div>
+        </div>
       </div>
     </template>
 
     <template id="userConfigTemplate">
       <div class="config-entry">
         <div class="config-entry-head">
-          <div>
-            <div class="config-entry-title">User</div>
-            <div class="config-entry-sub user-last-login">Last login: never</div>
-          </div>
-          <div class="config-entry-actions">
-            <button class="btn subtle config-save">Save</button>
-            <button class="btn ghost config-delete">Delete</button>
-          </div>
+          <div class="config-entry-title"></div>
         </div>
         <div class="config-grid">
           <label class="control">
@@ -412,8 +416,16 @@
             <input type="password" class="user-password" placeholder="Set a new password" />
           </label>
         </div>
+        <div class="config-entry-footer">
+          <div class="config-entry-sub user-last-login">Last login: never</div>
+          <div class="config-entry-actions align-right">
+            <button class="btn subtle config-save">Save</button>
+            <button class="btn ghost danger-text config-delete">Delete</button>
+          </div>
+        </div>
       </div>
     </template>
+
 
     <div class="modal hidden" id="composeModal">
       <div class="modal-backdrop"></div>
@@ -430,19 +442,21 @@
         <div class="compose-panel">
           <div class="compose-header">
             <div class="compose-path" id="composePath"></div>
-            <div class="compose-actions">
-              <button class="btn subtle" id="previewCompose">Review diff</button>
-              <button class="btn subtle hidden" id="confirmCompose">Confirm save</button>
-            </div>
           </div>
-          <div class="compose-editor-wrap">
-            <textarea class="compose-editor" id="composeEditor" spellcheck="false"></textarea>
+          <div class="compose-main">
+            <div class="compose-editor-wrap">
+              <textarea class="compose-editor" id="composeEditor" spellcheck="false"></textarea>
+            </div>
+            <div class="diff-panel hidden" id="diffPanel">
+              <div class="diff-header">Diff preview</div>
+              <div class="diff-view" id="diffView"></div>
+            </div>
           </div>
           <div class="compose-status" id="composeStatus"></div>
           <pre class="compose-lint hidden" id="composeLint"></pre>
-          <div class="diff-panel hidden" id="diffPanel">
-            <div class="diff-header">Diff preview</div>
-            <pre class="diff-content" id="diffContent"></pre>
+          <div class="compose-actions">
+            <button class="btn subtle" id="previewCompose">Review</button>
+            <button class="btn subtle hidden" id="confirmCompose">Save</button>
           </div>
         </div>
       </div>
@@ -749,9 +763,8 @@
                 <span>Next run: <strong id="scheduleNext">never</strong></span>
               </div>
 
-              <div class="schedule-actions">
-                <button class="btn primary" id="saveSchedule">Save schedule</button>
-                <button class="btn subtle" id="refreshSchedule">Refresh</button>
+              <div class="schedule-actions align-right">
+                <button class="btn primary accent-blue" id="saveSchedule">Save</button>
               </div>
 
               <div class="schedule-status" id="scheduleStatus"></div>
@@ -790,9 +803,8 @@
           </label>
           <div class="field-hint">Select one or more projects to restore.</div>
           <div class="config-status" id="restoreStatus"></div>
-          <div class="schedule-actions">
-            <button class="btn primary" id="runRestore">Restore</button>
-            <button class="btn subtle" id="cancelRestore">Cancel</button>
+          <div class="schedule-actions align-right">
+            <button class="btn primary accent-blue" id="runRestore">Restore</button>
           </div>
         </div>
       </div>
@@ -824,7 +836,7 @@
                   <div class="config-section-title">Hosts</div>
                   <div class="config-section-sub">Configure each SSH host the service will manage.</div>
                 </div>
-                <button class="btn subtle" id="addHostConfig">Add host</button>
+                <button class="btn subtle align-right" id="addHostConfig">Add</button>
               </div>
               <div class="config-list" id="hostConfigList"></div>
             </section>
@@ -836,7 +848,7 @@
                   <div class="config-section-title">Users</div>
                   <div class="config-section-sub">Manage local accounts for sign-in.</div>
                 </div>
-                <button class="btn subtle" id="addUserConfig">Add user</button>
+                <button class="btn subtle align-right" id="addUserConfig">Add</button>
               </div>
               <div class="config-list" id="userConfigList"></div>
             </section>
@@ -848,7 +860,7 @@
                   <div class="config-section-title">Backups</div>
                   <div class="config-section-sub">Configure backup destinations for rsync jobs. The first entry is used.</div>
                 </div>
-                <button class="btn subtle" id="addBackupConfig">Add backup</button>
+                <button class="btn subtle align-right" id="addBackupConfig">Add</button>
               </div>
               <div class="config-list" id="backupConfigList"></div>
             </section>
@@ -860,7 +872,6 @@
                   <div class="config-section-title">Misc</div>
                   <div class="config-section-sub">Intervals and authentication settings.</div>
                 </div>
-                <button class="btn subtle" id="saveIntervals">Save changes</button>
               </div>
               <div class="config-grid">
                 <label class="control">
@@ -877,6 +888,9 @@
                 </label>
               </div>
               <div class="field-hint">Set intervals to 0 to disable automatic refresh.</div>
+              <div class="schedule-actions align-right">
+                <button class="btn subtle" id="saveIntervals">Save</button>
+              </div>
             </section>
           </div>
           <div class="config-status" id="configStatus"></div>
@@ -913,28 +927,26 @@
           </div>
           <div class="create-run">
             <label class="control">
-              Docker run command
+              Docker run command (Optional: paste a docker run command to convert to compose.)
               <input type="text" id="createProjectRun" placeholder="docker run ..." />
             </label>
             <button class="btn subtle" id="convertRunToCompose">Convert</button>
           </div>
-          <div class="field-hint create-run-hint">
-            Optional: paste a docker run command to convert to compose.
-          </div>
-          <label class="control">
+          <label class="control span-2 create-compose">
             Compose file
-            <textarea id="createProjectCompose" rows="10" placeholder="version: '3.9'"></textarea>
+            <div class="compose-editor-wrap">
+              <textarea id="createProjectCompose" rows="10" placeholder="version: '3.9'"></textarea>
+            </div>
           </label>
-          <div class="progress create-progress">
+          <div class="progress create-progress hidden">
             <div class="progress-text" id="createProjectProgressText">Awaiting input</div>
             <div class="progress-track">
               <div class="progress-bar" id="createProjectProgressBar"></div>
             </div>
           </div>
           <div class="config-status" id="createProjectStatus"></div>
-          <div class="schedule-actions">
-            <button class="btn primary" id="createProjectSubmit">Create</button>
-            <button class="btn subtle" id="createProjectCancel">Cancel</button>
+          <div class="schedule-actions align-right">
+            <button class="btn primary accent-blue" id="createProjectSubmit">Create</button>
           </div>
         </div>
       </div>
@@ -953,12 +965,11 @@
           </button>
         </header>
         <div class="modal-body confirm-body">
-          <div class="confirm-text">Delete this project?</div>
           <div class="confirm-warning">
             This removes the project directory and all files from the host.
           </div>
-          <div class="schedule-actions">
-            <button class="btn danger" id="confirmDeleteProject">Yes, delete</button>
+          <div class="schedule-actions align-right">
+            <button class="btn danger" id="confirmDeleteProject">Delete</button>
           </div>
           <div class="config-status" id="deleteProjectStatus"></div>
         </div>
@@ -967,6 +978,13 @@
 
     <script src="/static/vendor/xterm/xterm.min.js"></script>
     <script src="/static/vendor/xterm/xterm-addon-fit.min.js"></script>
+    <script src="/static/vendor/codemirror/codemirror.min.js"></script>
+    <script src="/static/vendor/js-yaml.min.js"></script>
+    <script src="/static/vendor/codemirror/addon/lint/lint.min.js"></script>
+    <script src="/static/vendor/codemirror/addon/lint/yaml-lint.min.js"></script>
+    <script src="/static/vendor/codemirror/mode/yaml/yaml.min.js"></script>
+    <script src="/static/vendor/codemirror/addon/merge/diff_match_patch.js"></script>
+    <script src="/static/vendor/codemirror/addon/merge/merge.min.js"></script>
     <script src="/static/app.js"></script>
   </body>
 </html>

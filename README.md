@@ -29,7 +29,7 @@ Notes:
 python -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-DB_PATH=./state.db SECRET_SEED="change-me-32-chars-min" APP_LOG_LEVEL=INFO   uvicorn app.main:app --reload
+DB_PATH=./state.db SECRET_SEED="change-me-32-chars-min" APP_LOG_LEVEL=INFO uvicorn app.main:app --reload
 ```
 
 ## Run in Docker
@@ -37,7 +37,12 @@ DB_PATH=./state.db SECRET_SEED="change-me-32-chars-min" APP_LOG_LEVEL=INFO   uvi
 ```bash
 docker build -t remote-project-manager .
 
-docker run --rm -p 8000:8000   -e DB_PATH=/data/state.db   -e SECRET_SEED="change-me-32-chars-min"   -e APP_LOG_LEVEL=INFO   -v $(pwd)/state.db:/data/state.db   remote-project-manager
+docker run --rm -p 8000:8000 \
+  -e DB_PATH=/data/state.db \
+  -e SECRET_SEED="change-me-32-chars-min" \
+  -e APP_LOG_LEVEL=INFO \
+  -v $(pwd)/state.db:/data/state.db \
+  remote-project-manager
 ```
 
 ## HTTPS
@@ -47,13 +52,23 @@ To serve the UI/API over HTTPS, provide a certificate and key to uvicorn. The Do
 Local example:
 
 ```bash
-DB_PATH=./state.db SECRET_SEED="change-me-32-chars-min" APP_LOG_LEVEL=INFO SSL_CERTFILE=./certs/server.crt SSL_KEYFILE=./certs/server.key uvicorn app.main:app --host 0.0.0.0 --port 8000
+DB_PATH=./state.db SECRET_SEED="change-me-32-chars-min" APP_LOG_LEVEL=INFO \
+  SSL_CERTFILE=./certs/server.crt SSL_KEYFILE=./certs/server.key \
+  uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Docker example:
 
 ```bash
-docker run --rm -p 8000:8000   -e DB_PATH=/data/state.db   -e SECRET_SEED="change-me-32-chars-min"   -e APP_LOG_LEVEL=INFO   -e SSL_CERTFILE=/certs/server.crt   -e SSL_KEYFILE=/certs/server.key   -v $(pwd)/state.db:/data/state.db   -v $(pwd)/certs:/certs:ro   remote-project-manager
+docker run --rm -p 8000:8000 \
+  -e DB_PATH=/data/state.db \
+  -e SECRET_SEED="change-me-32-chars-min" \
+  -e APP_LOG_LEVEL=INFO \
+  -e SSL_CERTFILE=/certs/server.crt \
+  -e SSL_KEYFILE=/certs/server.key \
+  -v $(pwd)/state.db:/data/state.db \
+  -v $(pwd)/certs:/certs:ro \
+  remote-project-manager
 ```
 
 ## Authentication
@@ -82,9 +97,17 @@ The service refreshes project status and update availability on separate timers.
 
 Open `http://localhost:8000/` to access the management dashboard. The UI provides:
 - Host and project management (scan, start/stop/restart, compose editor, logs).
-- Backup configuration, scheduling, and restore workflows.
-- Configuration tabs for hosts, backups, users, and refresh intervals.
-- Status, update, and background event visibility.
+- Compose editor with syntax highlighting and a review/save diff workflow.
+- Backup configuration, scheduling, restore workflows, and background events.
+- Configuration tabs for hosts, backups, users, and misc intervals.
+- Status, update, and project details visibility.
+
+### UI overview
+
+The UI is split into three primary areas:
+- **Hosts**: manage connections, scan for projects, and trigger host-level actions.
+- **Projects**: table view of project status, updates, actions, details, and compose editing.
+- **Details & Modals**: compose editor, logs, backup schedule, restore, commands, and background events.
 
 ## Backups & restore
 

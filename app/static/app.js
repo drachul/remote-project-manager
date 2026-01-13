@@ -35,7 +35,7 @@ const previewComposeBtn = document.getElementById("previewCompose");
 const confirmComposeBtn = document.getElementById("confirmCompose");
 const closeComposeModalBtn = document.getElementById("closeComposeModal");
 const diffPanel = document.getElementById("diffPanel");
-const diffContent = document.getElementById("diffContent");
+const diffView = document.getElementById("diffView");
 const logsModal = document.getElementById("logsModal");
 const logsTarget = document.getElementById("logsTarget");
 const logsContent = document.getElementById("logsContent");
@@ -72,7 +72,6 @@ const restoreHostSelect = document.getElementById("restoreHost");
 const restoreProjectSelect = document.getElementById("restoreProject");
 const restoreStatus = document.getElementById("restoreStatus");
 const runRestoreBtn = document.getElementById("runRestore");
-const cancelRestoreBtn = document.getElementById("cancelRestore");
 const openCreateProjectBtn = document.getElementById("openCreateProject");
 const createProjectModal = document.getElementById("createProjectModal");
 const closeCreateProjectModalBtn = document.getElementById("closeCreateProjectModal");
@@ -85,7 +84,6 @@ const createProjectStatus = document.getElementById("createProjectStatus");
 const createProjectProgressText = document.getElementById("createProjectProgressText");
 const createProjectProgressBar = document.getElementById("createProjectProgressBar");
 const createProjectSubmit = document.getElementById("createProjectSubmit");
-const createProjectCancel = document.getElementById("createProjectCancel");
 const convertRunToComposeBtn = document.getElementById("convertRunToCompose");
 const deleteProjectModal = document.getElementById("deleteProjectModal");
 const closeDeleteProjectModalBtn = document.getElementById("closeDeleteProjectModal");
@@ -135,7 +133,6 @@ const monthsSelect = document.getElementById("scheduleMonths");
 const cronExpression = document.getElementById("cronExpression");
 const customCron = document.getElementById("customCron");
 const saveScheduleBtn = document.getElementById("saveSchedule");
-const refreshScheduleBtn = document.getElementById("refreshSchedule");
 const scheduleStatus = document.getElementById("scheduleStatus");
 const scheduleLast = document.getElementById("scheduleLast");
 const scheduleNext = document.getElementById("scheduleNext");
@@ -221,6 +218,11 @@ const composeState = {
   hostId: null,
   projectName: null,
 };
+
+let composeEditorCm = null;
+
+let composeDiffView = null;
+let createComposeEditor = null;
 
 const commandState = {
   hostId: null,
@@ -1493,9 +1495,6 @@ function initScheduleControls() {
   });
 
   saveScheduleBtn.addEventListener("click", saveSchedule);
-  refreshScheduleBtn.addEventListener("click", () => {
-    loadScheduleSummary(scheduleState.selectedKey);
-  });
 }
 
 function getActionLabel(button) {
@@ -1777,6 +1776,110 @@ function ansiToHtml(input) {
   return output;
 }
 
+function initComposeEditor() {
+  if (!composeEditor || composeEditorCm || !window.CodeMirror) {
+    return;
+  }
+  composeEditorCm = window.CodeMirror.fromTextArea(composeEditor, {
+    mode: "yaml",
+    theme: "material-darker",
+    lineNumbers: true,
+    lineWrapping: true,
+    gutters: ["CodeMirror-lint-markers", "CodeMirror-linenumbers"],
+    lint: true,
+    indentUnit: 2,
+    tabSize: 2,
+  });
+  composeEditorCm.on("change", handleComposeInput);
+}
+
+function refreshComposeEditor() {
+  if (composeEditorCm) {
+    composeEditorCm.refresh();
+  }
+}
+
+function getComposeValue() {
+  if (!composeEditor) {
+    return "";
+  }
+  return composeEditorCm ? composeEditorCm.getValue() : composeEditor.value || "";
+}
+
+function setComposeValue(value) {
+  if (!composeEditor) {
+    return;
+  }
+  if (composeEditorCm) {
+    composeEditorCm.setValue(value);
+  }
+  composeEditor.value = value;
+}
+
+function setComposeOriginal(value) {
+  if (!composeEditor) {
+    return;
+  }
+  composeEditor.dataset.original = value;
+}
+
+function handleComposeInput() {
+  diffPanel.classList.add("hidden");
+  confirmComposeBtn.classList.add("hidden");
+  if (previewComposeBtn) {
+    previewComposeBtn.classList.remove("hidden");
+  }
+  if (composeModal) {
+    composeModal.classList.remove("reviewing");
+  }
+  composeStatus.textContent = "";
+  composeLint.classList.add("hidden");
+  composeLint.textContent = "";
+  if (diffView) {
+    diffView.innerHTML = "";
+  }
+  composeDiffView = null;
+}
+
+function initCreateComposeEditor() {
+  if (!createProjectCompose || createComposeEditor || !window.CodeMirror) {
+    return;
+  }
+  createComposeEditor = window.CodeMirror.fromTextArea(createProjectCompose, {
+    mode: "yaml",
+    theme: "material-darker",
+    lineNumbers: true,
+    lineWrapping: true,
+    gutters: ["CodeMirror-lint-markers", "CodeMirror-linenumbers"],
+    lint: true,
+    indentUnit: 2,
+    tabSize: 2,
+  });
+}
+
+function refreshCreateComposeEditor() {
+  if (createComposeEditor) {
+    createComposeEditor.refresh();
+  }
+}
+
+function getCreateComposeValue() {
+  if (!createProjectCompose) {
+    return "";
+  }
+  return createComposeEditor ? createComposeEditor.getValue() : createProjectCompose.value || "";
+}
+
+function setCreateComposeValue(value) {
+  if (!createProjectCompose) {
+    return;
+  }
+  if (createComposeEditor) {
+    createComposeEditor.setValue(value);
+  }
+  createProjectCompose.value = value;
+}
+
 function applyCommandChunk(chunk, outputParts) {
   if (!chunk) {
     return;
@@ -1803,23 +1906,36 @@ function openComposeModal(hostId, projectName) {
   composeState.hostId = hostId;
   composeState.projectName = projectName;
   composeModal.classList.remove("hidden");
+  initComposeEditor();
+  refreshComposeEditor();
   composeTarget.textContent = `${hostId} / ${projectName}`;
   composePath.textContent = "";
-  composeEditor.value = "";
-  composeEditor.dataset.original = "";
+  setComposeValue("");
+  setComposeOriginal("");
   composeStatus.textContent = "Loading compose file...";
   diffPanel.classList.add("hidden");
   confirmComposeBtn.classList.add("hidden");
+  if (previewComposeBtn) {
+    previewComposeBtn.classList.remove("hidden");
+  }
+  if (composeModal) {
+    composeModal.classList.remove("reviewing");
+  }
   composeLint.classList.add("hidden");
   composeLint.textContent = "";
+  if (diffView) {
+    diffView.innerHTML = "";
+  }
+  composeDiffView = null;
 
   api
     .get(`/hosts/${hostId}/projects/${projectName}/compose`)
     .then((data) => {
       composePath.textContent = data.path || "";
-      composeEditor.value = data.content || "";
-      composeEditor.dataset.original = data.content || "";
+      setComposeValue(data.content || "");
+      setComposeOriginal(data.content || "");
       composeStatus.textContent = "";
+      refreshComposeEditor();
     })
     .catch((err) => {
       composeStatus.textContent = `Error: ${err.message}`;
@@ -1832,8 +1948,18 @@ function closeComposeModal() {
   composeState.projectName = null;
   diffPanel.classList.add("hidden");
   confirmComposeBtn.classList.add("hidden");
+  if (previewComposeBtn) {
+    previewComposeBtn.classList.remove("hidden");
+  }
+  if (composeModal) {
+    composeModal.classList.remove("reviewing");
+  }
   composeLint.classList.add("hidden");
   composeLint.textContent = "";
+  if (diffView) {
+    diffView.innerHTML = "";
+  }
+  composeDiffView = null;
 }
 function openCommandModal(hostId, projectName) {
   if (!commandModal) {
@@ -2876,6 +3002,10 @@ function resetCreateProgress() {
   if (createProjectProgressBar) {
     createProjectProgressBar.style.width = "0%";
   }
+  const progress = document.querySelector(".create-progress");
+  if (progress) {
+    progress.classList.add("hidden");
+  }
 }
 
 function setCreateProgress(message, percent) {
@@ -2884,6 +3014,10 @@ function setCreateProgress(message, percent) {
   }
   if (createProjectProgressBar && typeof percent === "number") {
     createProjectProgressBar.style.width = `${percent}%`;
+  }
+  const progress = document.querySelector(".create-progress");
+  if (progress) {
+    progress.classList.remove("hidden");
   }
 }
 
@@ -2915,7 +3049,8 @@ async function convertRunToCompose() {
   setCreateProgress("Converting docker run...", 20);
   try {
     const composeText = await requestRunConversion(command, serviceName);
-    createProjectCompose.value = composeText;
+    setCreateComposeValue(composeText);
+    refreshCreateComposeEditor();
     createProjectStatus.textContent = "Docker run converted to compose.";
     createProjectStatus.classList.add("success");
     setCreateProgress("Conversion complete.", 40);
@@ -3007,6 +3142,8 @@ function openCreateProjectModal() {
     return;
   }
   createProjectModal.classList.remove("hidden");
+  initCreateComposeEditor();
+  refreshCreateComposeEditor();
   populateCreateProjectHosts();
   if (createProjectName) {
     createProjectName.value = "";
@@ -3015,7 +3152,8 @@ function openCreateProjectModal() {
     createProjectRun.value = "";
   }
   if (createProjectCompose) {
-    createProjectCompose.value = DEFAULT_CREATE_COMPOSE;
+    setCreateComposeValue(DEFAULT_CREATE_COMPOSE);
+    refreshCreateComposeEditor();
   }
   if (createProjectBackup) {
     createProjectBackup.checked = false;
@@ -3110,7 +3248,7 @@ async function submitCreateProject() {
   const hostId = createProjectHost.value;
   const projectName = createProjectName.value.trim();
   const runCommand = createProjectRun ? createProjectRun.value.trim() : "";
-  let content = createProjectCompose.value || "";
+  let content = getCreateComposeValue();
   const enableBackup = Boolean(createProjectBackup && createProjectBackup.checked);
   if (!hostId) {
     createProjectStatus.textContent = "Select a host for the project.";
@@ -3128,7 +3266,8 @@ async function submitCreateProject() {
     setCreateProgress("Converting docker run...", 15);
     try {
       content = await requestRunConversion(runCommand, projectName);
-      createProjectCompose.value = content;
+      setCreateComposeValue(content);
+      refreshCreateComposeEditor();
     } catch (err) {
       setCreateProgress("Conversion failed.", 0);
       createProjectStatus.textContent = `Conversion failed: ${err.message}`;
@@ -3143,9 +3282,6 @@ async function submitCreateProject() {
   }
 
   createProjectSubmit.disabled = true;
-  if (createProjectCancel) {
-    createProjectCancel.disabled = true;
-  }
   createProjectStatus.classList.remove("error", "success");
   createProjectStatus.textContent = "";
   resetCreateProgress();
@@ -3182,9 +3318,6 @@ async function submitCreateProject() {
     createProjectStatus.classList.add("error");
   } finally {
     createProjectSubmit.disabled = false;
-    if (createProjectCancel) {
-      createProjectCancel.disabled = false;
-    }
   }
 }
 
@@ -3233,6 +3366,11 @@ function initConfigTabs() {
   state.configTabsInit = true;
 }
 
+function confirmDeleteResource(label, name) {
+  const target = name ? ` ${name}` : "";
+  return window.confirm(`Are you sure you want to delete ${label}${target}?`);
+}
+
 function buildHostConfigEntry(host, isNew) {
   const entry = hostConfigTemplate.content.firstElementChild.cloneNode(true);
   entry.dataset.new = isNew ? "true" : "false";
@@ -3242,6 +3380,8 @@ function buildHostConfigEntry(host, isNew) {
   const userInput = entry.querySelector(".host-user");
   const portInput = entry.querySelector(".host-port");
   const keyInput = entry.querySelector(".host-key");
+  const title = entry.querySelector(".host-title");
+  const collapseBtn = entry.querySelector(".config-collapse");
   idInput.value = host?.id || "";
   rootInput.value = host?.project_root || "";
   addressInput.value = host?.ssh_address || "";
@@ -3250,11 +3390,36 @@ function buildHostConfigEntry(host, isNew) {
   keyInput.value = host?.ssh_key || "";
   if (!isNew) {
     idInput.disabled = true;
+    entry.classList.add("collapsed");
+    if (collapseBtn) {
+      collapseBtn.classList.add("collapsed");
+    }
+  }
+  const updateTitle = () => {
+    if (!title) {
+      return;
+    }
+    const value = idInput.value.trim();
+    title.textContent = value || (isNew ? "New host" : "Host");
+  };
+  updateTitle();
+  idInput.addEventListener("input", updateTitle);
+  if (collapseBtn) {
+    collapseBtn.addEventListener("click", () => {
+      entry.classList.toggle("collapsed");
+      collapseBtn.classList.toggle("collapsed", entry.classList.contains("collapsed"));
+    });
   }
   const saveBtn = entry.querySelector(".config-save");
   const deleteBtn = entry.querySelector(".config-delete");
   saveBtn.addEventListener("click", () => saveHostConfig(entry));
-  deleteBtn.addEventListener("click", () => deleteHostConfig(entry));
+  deleteBtn.addEventListener("click", () => {
+    const name = idInput.value.trim();
+    if (!confirmDeleteResource("host", name)) {
+      return;
+    }
+    deleteHostConfig(entry);
+  });
   return entry;
 }
 
@@ -3269,6 +3434,8 @@ function buildBackupConfigEntry(backup, isNew) {
   const portInput = entry.querySelector(".backup-port");
   const basePathInput = entry.querySelector(".backup-base-path");
   const enabledInput = entry.querySelector(".backup-enabled");
+  const title = entry.querySelector(".backup-title");
+  const collapseBtn = entry.querySelector(".config-collapse");
   idInput.value = backup?.id || "";
   addressInput.value = backup?.address || "";
   usernameInput.value = backup?.username || "";
@@ -3281,11 +3448,36 @@ function buildBackupConfigEntry(backup, isNew) {
   }
   if (!isNew) {
     idInput.disabled = true;
+    entry.classList.add("collapsed");
+    if (collapseBtn) {
+      collapseBtn.classList.add("collapsed");
+    }
+  }
+  const updateTitle = () => {
+    if (!title) {
+      return;
+    }
+    const value = idInput.value.trim();
+    title.textContent = value || (isNew ? "New backup" : "Backup");
+  };
+  updateTitle();
+  idInput.addEventListener("input", updateTitle);
+  if (collapseBtn) {
+    collapseBtn.addEventListener("click", () => {
+      entry.classList.toggle("collapsed");
+      collapseBtn.classList.toggle("collapsed", entry.classList.contains("collapsed"));
+    });
   }
   const saveBtn = entry.querySelector(".config-save");
   const deleteBtn = entry.querySelector(".config-delete");
   saveBtn.addEventListener("click", () => saveBackupConfig(entry));
-  deleteBtn.addEventListener("click", () => deleteBackupConfig(entry));
+  deleteBtn.addEventListener("click", () => {
+    const name = idInput.value.trim();
+    if (!confirmDeleteResource("backup target", name)) {
+      return;
+    }
+    deleteBackupConfig(entry);
+  });
   return entry;
 }
 
@@ -3307,7 +3499,26 @@ function buildUserConfigEntry(user, isNew) {
   const saveBtn = entry.querySelector(".config-save");
   const deleteBtn = entry.querySelector(".config-delete");
   saveBtn.addEventListener("click", () => saveUserConfig(entry));
-  deleteBtn.addEventListener("click", () => deleteUserConfig(entry));
+  const usernameValue = usernameInput.value.trim();
+  const isAdmin = usernameValue.toLowerCase() == "admin";
+  if (deleteBtn) {
+    deleteBtn.disabled = isAdmin;
+    deleteBtn.dataset.forceDisabled = isAdmin ? "true" : "";
+  }
+  if (isAdmin && deleteBtn) {
+    deleteBtn.title = "Admin user cannot be deleted.";
+  }
+  deleteBtn.addEventListener("click", () => {
+    const name = usernameInput.value.trim();
+    if (name.toLowerCase() === "admin") {
+      alert("The admin user cannot be deleted.");
+      return;
+    }
+    if (!confirmDeleteResource("user", name)) {
+      return;
+    }
+    deleteUserConfig(entry);
+  });
   return entry;
 }
 
@@ -5744,27 +5955,55 @@ async function init() {
   await initApp();
 }
 
-composeEditor.addEventListener("input", () => {
-  diffPanel.classList.add("hidden");
-  confirmComposeBtn.classList.add("hidden");
-  composeStatus.textContent = "";
-  composeLint.classList.add("hidden");
-  composeLint.textContent = "";
-});
+composeEditor.addEventListener("input", handleComposeInput);
 
 previewComposeBtn.addEventListener("click", () => {
   const original = composeEditor.dataset.original || "";
-  const current = composeEditor.value || "";
+  const current = getComposeValue();
   if (original === current) {
     composeStatus.textContent = "No changes to save.";
     diffPanel.classList.add("hidden");
     confirmComposeBtn.classList.add("hidden");
     return;
   }
-  const diff = buildDiff(original, current);
-  diffContent.innerHTML = renderDiff(diff);
+  if (diffView) {
+    diffView.innerHTML = "";
+  }
   diffPanel.classList.remove("hidden");
+  if (window.CodeMirror && window.diff_match_patch && diffView) {
+    composeDiffView = window.CodeMirror.MergeView(diffView, {
+      value: current,
+      origRight: original,
+      mode: "yaml",
+      theme: "material-darker",
+      lineNumbers: true,
+      lineWrapping: true,
+      readOnly: true,
+      highlightDifferences: true,
+      connect: "align",
+      collapseIdentical: true,
+    });
+    window.setTimeout(() => {
+      const editors = [];
+      if (composeDiffView && composeDiffView.editor) {
+        editors.push(composeDiffView.editor());
+      }
+      if (composeDiffView && composeDiffView.rightOriginal) {
+        editors.push(composeDiffView.rightOriginal());
+      }
+      if (composeDiffView && composeDiffView.leftOriginal) {
+        editors.push(composeDiffView.leftOriginal());
+      }
+      editors.forEach((editor) => editor && editor.refresh());
+    }, 0);
+  }
   confirmComposeBtn.classList.remove("hidden");
+  if (previewComposeBtn) {
+    previewComposeBtn.classList.add("hidden");
+  }
+  if (composeModal) {
+    composeModal.classList.add("reviewing");
+  }
   composeLint.classList.add("hidden");
   composeLint.textContent = "";
   composeStatus.textContent = "Review the diff and confirm to save.";
@@ -5776,33 +6015,24 @@ confirmComposeBtn.addEventListener("click", async () => {
     return;
   }
   confirmComposeBtn.disabled = true;
-  composeStatus.textContent = "Validating...";
+  composeStatus.textContent = "Saving...";
   composeLint.classList.add("hidden");
   composeLint.textContent = "";
   try {
-    const validation = await api.post(
-      `/hosts/${composeState.hostId}/projects/${composeState.projectName}/compose/validate`,
-      { content: composeEditor.value }
-    );
-    if (!validation.ok) {
-      composeStatus.textContent = "Validation failed.";
-      composeLint.textContent = validation.output || "Compose validation failed.";
-      composeLint.classList.remove("hidden");
-      return;
-    }
-    if (validation.output) {
-      composeLint.textContent = validation.output;
-      composeLint.classList.remove("hidden");
-    }
-    composeStatus.textContent = "Saving...";
     await api.put(
       `/hosts/${composeState.hostId}/projects/${composeState.projectName}/compose`,
-      { content: composeEditor.value }
+      { content: getComposeValue() }
     );
-    composeEditor.dataset.original = composeEditor.value;
+    setComposeOriginal(getComposeValue());
     composeStatus.textContent = "Saved.";
     diffPanel.classList.add("hidden");
     confirmComposeBtn.classList.add("hidden");
+    if (previewComposeBtn) {
+      previewComposeBtn.classList.remove("hidden");
+    }
+    if (composeModal) {
+      composeModal.classList.remove("reviewing");
+    }
     await refreshHosts([composeState.hostId]);
   } catch (err) {
     composeStatus.textContent = `Error: ${err.message}`;
@@ -6006,9 +6236,6 @@ if (openRestoreModalBtn) {
 if (closeRestoreModalBtn) {
   closeRestoreModalBtn.addEventListener("click", closeRestoreModal);
 }
-if (cancelRestoreBtn) {
-  cancelRestoreBtn.addEventListener("click", closeRestoreModal);
-}
 if (restoreModal) {
   restoreModal
     .querySelector(".modal-backdrop")
@@ -6053,9 +6280,6 @@ if (openCreateProjectBtn) {
 }
 if (closeCreateProjectModalBtn) {
   closeCreateProjectModalBtn.addEventListener("click", closeCreateProjectModal);
-}
-if (createProjectCancel) {
-  createProjectCancel.addEventListener("click", closeCreateProjectModal);
 }
 if (createProjectSubmit) {
   createProjectSubmit.addEventListener("click", submitCreateProject);

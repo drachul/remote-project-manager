@@ -1168,6 +1168,10 @@ body {
   gap: 10px;
 }
 
+.schedule-actions.align-right {
+  justify-content: flex-end;
+}
+
 .schedule-status {
   font-size: 12px;
   color: var(--muted);
@@ -1244,6 +1248,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  flex: 1;
+  min-height: 0;
 }
 
 .compose-panel.hidden {
@@ -1266,6 +1272,23 @@ body {
 .compose-actions {
   display: flex;
   gap: 6px;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+.compose-main {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+  flex: 1;
+  min-height: 0;
+}
+
+.compose-editor-wrap,
+.diff-panel {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
 }
 
 .compose-editor {
@@ -1281,6 +1304,24 @@ body {
   line-height: 1.5;
   resize: vertical;
   overflow: auto;
+}
+
+
+.compose-editor-wrap .CodeMirror {
+  min-height: 220px;
+  height: 100%;
+  font-family: "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.compose-editor-wrap .CodeMirror-scroll {
+  height: 100%;
+}
+
+.compose-editor-wrap .CodeMirror-gutters {
+  background: #0c131d;
+  border-right: 1px solid rgba(243, 244, 246, 0.08);
 }
 
 .compose-status {
@@ -1359,6 +1400,13 @@ body {
   border-radius: 12px;
   padding: 12px;
   border: 1px solid rgba(243, 244, 246, 0.08);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.diff-panel.hidden {
+  display: none;
 }
 
 .diff-header {
@@ -1367,30 +1415,97 @@ body {
   margin-bottom: 8px;
 }
 
-.diff-content {
-  margin: 0;
-  max-height: 220px;
-  overflow: auto;
-  font-size: 12px;
+.diff-view {
+  border: 1px solid rgba(243, 244, 246, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+  width: 100%;
+  min-height: 220px;
+  height: 100%;
+  flex: 1;
+}
+
+
+.diff-view .CodeMirror-merge,
+.diff-view .CodeMirror-merge-pane,
+.diff-view .CodeMirror-merge .CodeMirror {
+  height: 100%;
+}
+
+.diff-view .CodeMirror-scroll {
+  height: 100%;
+}
+
+
+.diff-view .CodeMirror-merge-pane .CodeMirror,
+.diff-view .CodeMirror-merge-pane {
+  background: #0c131d;
+}
+
+.diff-view .CodeMirror-merge-gap {
+  background: #0a0f16;
+  border-left: 1px solid rgba(243, 244, 246, 0.08);
+  border-right: 1px solid rgba(243, 244, 246, 0.08);
+}
+
+.diff-view .CodeMirror-merge-scrolllock {
+  background: #0a0f16;
+}
+
+.diff-view .CodeMirror-merge-l-chunk,
+.diff-view .CodeMirror-merge-l-chunk-start,
+.diff-view .CodeMirror-merge-l-chunk-end {
+  background: rgba(34, 197, 94, 0.18);
+}
+
+.diff-view .CodeMirror-merge-r-chunk,
+.diff-view .CodeMirror-merge-r-chunk-start,
+.diff-view .CodeMirror-merge-r-chunk-end {
+  background: rgba(248, 113, 113, 0.18);
+}
+
+.diff-view .CodeMirror-merge-l-connect {
+  fill: rgba(34, 197, 94, 0.28);
+  stroke: rgba(34, 197, 94, 0.4);
+}
+
+.diff-view .CodeMirror-merge-r-connect {
+  fill: rgba(248, 113, 113, 0.28);
+  stroke: rgba(248, 113, 113, 0.4);
+}
+
+.diff-view .CodeMirror-merge-collapsed {
+  background: rgba(148, 163, 184, 0.18);
+  color: #cbd5f5;
+}
+#createProjectModal .CodeMirror {
+  width: 100%;
+  min-height: 200px;
+  height: auto;
   font-family: "Courier New", monospace;
-  white-space: pre;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
-.diff-line {
-  display: block;
-  padding: 2px 6px;
-  border-radius: 6px;
+#createProjectModal .CodeMirror-gutters {
+  background: #0c131d;
+  border-right: 1px solid rgba(243, 244, 246, 0.08);
 }
 
-.diff-line.add {
-  background: rgba(45, 212, 191, 0.12);
-  color: #7ff1e5;
+#createProjectModal .compose-editor-wrap {
+  min-height: 220px;
 }
 
-.diff-line.remove {
-  background: rgba(255, 90, 31, 0.12);
-  color: #ff9a7a;
+#createProjectModal .compose-editor-wrap .CodeMirror {
+  height: 220px;
 }
+
+#createProjectModal .toggle {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
 
 .modal {
   position: fixed;
@@ -1427,6 +1542,15 @@ body {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+#composeModal.reviewing .modal-card {
+  width: min(1200px, 96vw);
+}
+
+#composeModal .modal-card {
+  max-height: 90vh;
+  overflow: hidden;
 }
 
 .confirm-modal-card {
@@ -1672,6 +1796,10 @@ body {
   gap: 12px;
 }
 
+.config-section-head .align-right {
+  margin-left: auto;
+}
+
 .config-section-title {
   font-size: 16px;
   font-weight: 600;
@@ -1735,6 +1863,80 @@ body {
   gap: 12px;
 }
 
+.host-entry .config-entry-head {
+  align-items: center;
+}
+
+.host-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.config-collapse {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.config-collapse .material-symbols-outlined {
+  font-size: 20px;
+  transition: transform 0.2s ease;
+}
+
+.config-collapse.collapsed .material-symbols-outlined {
+  transform: rotate(-90deg);
+}
+
+.host-entry.collapsed .config-grid {
+  display: none;
+}
+
+.host-entry.collapsed .host-body {
+  display: none;
+}
+
+
+.backup-entry .config-entry-head {
+  align-items: center;
+}
+
+.backup-entry.collapsed .config-grid {
+  display: none;
+}
+
+.backup-entry.collapsed .config-entry-footer {
+  display: none;
+}
+
+.backup-entry .config-entry-footer {
+  justify-content: flex-end;
+}
+
+.backup-entry .config-entry-actions {
+  margin-left: auto;
+}
+
+.config-entry-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.host-entry .config-entry-footer {
+  justify-content: flex-end;
+}
+
+.btn.danger-text {
+  color: #fca5a5;
+}
+
 .config-entry-head {
   display: flex;
   align-items: flex-start;
@@ -1755,6 +1957,10 @@ body {
 .config-entry-actions {
   display: flex;
   gap: 8px;
+}
+
+.backup-entry .backup-toggle {
+  margin-left: auto;
 }
 
 .config-grid {
@@ -1900,9 +2106,6 @@ body {
   white-space: nowrap;
 }
 
-.create-run-hint {
-  margin-top: -4px;
-}
 
 .config-status {
   font-size: 12px;
@@ -2036,6 +2239,11 @@ body.hard-restart-active .service-action[data-action="restart"]:not(.in-progress
   color: #0b0d12;
 }
 
+.btn.accent-blue {
+  background: #3b82f6;
+  color: #0b0d12;
+}
+
 .btn.danger {
   background: #ef4444;
   color: #0b0d12;
@@ -2049,6 +2257,10 @@ body.hard-restart-active .service-action[data-action="restart"]:not(.in-progress
 .btn.ghost {
   background: rgba(243, 244, 246, 0.06);
   color: var(--text);
+}
+
+.btn.ghost.danger-text {
+  color: #fca5a5;
 }
 
 .btn.ghost.active {
