@@ -170,7 +170,11 @@ function setHardRestartActive(active) {
     return;
   }
   document.body.classList.toggle("hard-restart-active", active);
+  if (!active) {
+    state.shiftStartLocks.clear();
+  }
   updateBulkRestartLabel(active);
+  updateShiftStartButtons();
 }
 
 function handleHardRestartModifier(event) {
@@ -185,10 +189,50 @@ function updateBulkRestartLabel(active) {
   if (!button) {
     return;
   }
+  const baseLabel = button.dataset.baseLabel || "Restart";
   if (!button.dataset.baseLabel) {
-    button.dataset.baseLabel = button.textContent || "Restart";
+    button.dataset.baseLabel = baseLabel;
   }
-  button.textContent = active ? "Hard Restart" : button.dataset.baseLabel;
+  const label = active ? "Hard Restart" : baseLabel;
+  button.title = label;
+  button.setAttribute("aria-label", label);
+}
+
+function updateShiftStartButtons() {
+  if (!projectList) {
+    return;
+  }
+  const shiftActive = document.body?.classList.contains("hard-restart-active");
+  projectList.querySelectorAll(".project-row").forEach((row) => {
+    if (row.dataset.allowProjectActions !== "true") {
+      return;
+    }
+    const projectRunning = row.dataset.projectRunning === "true";
+    const projectKey = row.dataset.projectKey || "";
+    const shiftOverride = Boolean(
+      shiftActive && projectRunning && !state.shiftStartLocks.has(projectKey)
+    );
+    const startBtn = row.querySelector('.project-action[data-action="start"]');
+    const stopBtn = row.querySelector('.project-action[data-action="stop"]');
+    if (!startBtn || !stopBtn) {
+      return;
+    }
+    const startRunning = startBtn.dataset.actionRunning === "true";
+    const stopRunning = stopBtn.dataset.actionRunning === "true";
+    let showStart = startRunning || !projectRunning;
+    let showStop = stopRunning || projectRunning;
+    if (shiftOverride && !stopRunning) {
+      showStart = true;
+      showStop = false;
+    }
+    if (!startBtn.classList.contains("role-hidden")) {
+      startBtn.classList.toggle("hidden", !showStart);
+    }
+    if (!stopBtn.classList.contains("role-hidden")) {
+      stopBtn.classList.toggle("hidden", !showStop);
+    }
+    startBtn.classList.toggle("shift-start", shiftOverride);
+  });
 }
 
 const ROLE_ADMIN = "admin";
@@ -208,6 +252,7 @@ const state = {
   initialized: false,
   configTabsInit: false,
   selectedProjects: new Set(),
+  shiftStartLocks: new Set(),
   backupCancelled: new Set(),
   actionProgress: new Map(),
   hostActionProgress: new Map(),
@@ -4930,6 +4975,7 @@ function renderProjectList() {
       row.dataset.projectKey = entry.key;
       const restoreLocked = state.restoreInProgress && state.restoreLockedProjects.has(entry.key);
       const allowProjectActions = canManageProjects();
+      row.dataset.allowProjectActions = allowProjectActions ? "true" : "false";
       const allowBackupAction = isAdminRole();
       const allowComposeEdit = canEditCompose();
       const allowDeleteProject = canDeleteProject();
@@ -5052,6 +5098,7 @@ function renderProjectList() {
     const actionStates = getActionProgress(entry.key);
     let serviceActionActive = false;
     const projectRunning = statusInfo.className === "up" || statusInfo.className === "degraded";
+    row.dataset.projectRunning = projectRunning ? "true" : "false";
     const startRunning = actionStates.has("start");
     const stopRunning = actionStates.has("stop");
     const restartRunning =
@@ -5060,6 +5107,11 @@ function renderProjectList() {
     const backupRunning = actionStates.has("backup");
     const refreshRunning = actionStates.has("refresh");
 
+    const shiftActive = document.body?.classList.contains("hard-restart-active");
+    const shiftOverride = Boolean(
+      shiftActive && projectRunning && !state.shiftStartLocks.has(entry.key)
+    );
+
     const startBtn = row.querySelector(".project-action[data-action=\"start\"]");
     const stopBtn = row.querySelector(".project-action[data-action=\"stop\"]");
     const restartBtn = row.querySelector(".project-action[data-action=\"restart\"]");
@@ -5067,8 +5119,12 @@ function renderProjectList() {
     const backupBtn = row.querySelector(".project-action[data-action=\"backup\"]");
     const refreshBtn = row.querySelector(".project-action[data-action=\"refresh\"]");
 
-    const showStart = startRunning || !projectRunning;
-    const showStop = stopRunning || projectRunning;
+    let showStart = startRunning || !projectRunning;
+    let showStop = stopRunning || projectRunning;
+    if (shiftOverride && !stopRunning) {
+      showStart = true;
+      showStop = false;
+    }
     const showRestart = restartRunning || projectRunning;
 
     if (startBtn) {
@@ -5079,6 +5135,7 @@ function renderProjectList() {
         startBtn.disabled = true;
       }
       setActionRunning(startBtn, startRunning);
+      startBtn.classList.toggle("shift-start", shiftOverride);
       startBtn.classList.toggle("hidden", !allowProjectActions || !showStart);
     }
     if (stopBtn) {
@@ -5680,6 +5737,10 @@ async function runProjectAction(button, hostId, projectName, action) {
   button.dataset.originalLabel = originalLabel;
   const isBackup = action === "backup";
   const projectKey = `${hostId}::${projectName}`;
+  const shiftStartRequested =
+    action === "start" &&
+    row?.dataset.projectRunning === "true" &&
+    document.body?.classList.contains("hard-restart-active");
   const runningAction = button.dataset.runningAction || action;
   const isRunning = button.dataset.actionRunning === "true";
 
@@ -5802,6 +5863,10 @@ async function runProjectAction(button, hostId, projectName, action) {
     }
     setActionRunning(button, false);
     button.dataset.runningAction = "";
+    if (shiftStartRequested && document.body?.classList.contains("hard-restart-active")) {
+      state.shiftStartLocks.add(projectKey);
+    }
+    updateShiftStartButtons();
     if (!isBackup) {
       setActionLabel(button, originalLabel);
     }
