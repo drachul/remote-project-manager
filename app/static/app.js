@@ -25,6 +25,13 @@ const composePath = document.getElementById("composePath");
 const composeEditor = document.getElementById("composeEditor");
 const composeStatus = document.getElementById("composeStatus");
 const composeLint = document.getElementById("composeLint");
+const composeSearchBar = document.getElementById("composeSearchBar");
+const composeSearchInput = document.getElementById("composeSearchInput");
+const composeReplaceInput = document.getElementById("composeReplaceInput");
+const composeFindNextBtn = document.getElementById("composeFindNext");
+const composeReplaceBtn = document.getElementById("composeReplace");
+const composeReplaceAllBtn = document.getElementById("composeReplaceAll");
+const composeSearchCloseBtn = document.getElementById("composeSearchClose");
 const commandModal = document.getElementById("commandModal");
 const closeCommandModalBtn = document.getElementById("closeCommandModal");
 const commandTarget = document.getElementById("commandTarget");
@@ -81,6 +88,13 @@ const createProjectName = document.getElementById("createProjectName");
 const createProjectBackup = document.getElementById("createProjectBackup");
 const createProjectRun = document.getElementById("createProjectRun");
 const createProjectCompose = document.getElementById("createProjectCompose");
+const createSearchBar = document.getElementById("createSearchBar");
+const createSearchInput = document.getElementById("createSearchInput");
+const createReplaceInput = document.getElementById("createReplaceInput");
+const createFindNextBtn = document.getElementById("createFindNext");
+const createReplaceBtn = document.getElementById("createReplace");
+const createReplaceAllBtn = document.getElementById("createReplaceAll");
+const createSearchCloseBtn = document.getElementById("createSearchClose");
 const createProjectStatus = document.getElementById("createProjectStatus");
 const createProjectProgressText = document.getElementById("createProjectProgressText");
 const createProjectProgressBar = document.getElementById("createProjectProgressBar");
@@ -148,6 +162,9 @@ const scheduleSummaryBody = document.getElementById("scheduleSummaryBody");
 const scheduleConfig = document.getElementById("scheduleConfig");
 
 function handleFindShortcut(event) {
+  if (event.defaultPrevented) {
+    return;
+  }
   if (!projectFilterName) {
     return;
   }
@@ -160,9 +177,42 @@ function handleFindShortcut(event) {
   if (document.activeElement === projectFilterName) {
     return;
   }
+  if (
+    (composeModal && !composeModal.classList.contains("hidden")) ||
+    (createProjectModal && !createProjectModal.classList.contains("hidden"))
+  ) {
+    return;
+  }
   event.preventDefault();
   projectFilterName.focus();
   projectFilterName.select();
+}
+
+function handleComposeSearchShortcut(event) {
+  if (event.defaultPrevented) {
+    return;
+  }
+  if (!(event.ctrlKey || event.metaKey) || event.altKey) {
+    return;
+  }
+  const key = event.key.toLowerCase();
+  if (key !== "f" && key !== "h") {
+    return;
+  }
+  const composeOpen = composeModal && !composeModal.classList.contains("hidden");
+  const createOpen = createProjectModal && !createProjectModal.classList.contains("hidden");
+  if (!composeOpen && !createOpen) {
+    return;
+  }
+  const context = composeOpen ? getComposeSearchContext() : getCreateSearchContext();
+  if (!context || !context.bar) {
+    return;
+  }
+  if (document.activeElement === context.searchInput || document.activeElement === context.replaceInput) {
+    return;
+  }
+  event.preventDefault();
+  openSearchBar(context, key === "h" ? "replace" : "find");
 }
 
 function setHardRestartActive(active) {
@@ -276,6 +326,16 @@ const state = {
 const composeState = {
   hostId: null,
   projectName: null,
+};
+
+const composeSearchState = {
+  query: "",
+  lastMatch: null,
+};
+
+const createSearchState = {
+  query: "",
+  lastMatch: null,
 };
 
 let composeEditorCm = null;
@@ -2124,6 +2184,286 @@ function handleComposeInput() {
     diffView.innerHTML = "";
   }
   composeDiffView = null;
+  resetSearchState(composeSearchState);
+}
+
+function handleCreateComposeInput() {
+  resetSearchState(createSearchState);
+}
+
+function resetSearchState(state) {
+  if (!state) {
+    return;
+  }
+  state.query = "";
+  state.lastMatch = null;
+}
+
+function getEditorText(editor, textarea) {
+  if (editor) {
+    return editor.getValue();
+  }
+  if (textarea) {
+    return textarea.value || "";
+  }
+  return "";
+}
+
+function setEditorText(editor, textarea, value, onChange) {
+  if (editor) {
+    editor.setValue(value);
+    return;
+  }
+  if (textarea) {
+    textarea.value = value;
+  }
+  if (onChange) {
+    onChange();
+  }
+}
+
+function getEditorSelectionRange(editor, textarea) {
+  if (editor) {
+    const selection = editor.listSelections()[0];
+    const from = selection ? selection.from() : editor.getCursor("from");
+    const to = selection ? selection.to() : editor.getCursor("to");
+    return {
+      start: editor.indexFromPos(from),
+      end: editor.indexFromPos(to),
+    };
+  }
+  if (textarea) {
+    return {
+      start: textarea.selectionStart || 0,
+      end: textarea.selectionEnd || 0,
+    };
+  }
+  return { start: 0, end: 0 };
+}
+
+function setEditorSelectionRange(editor, textarea, start, end) {
+  if (editor) {
+    const from = editor.posFromIndex(start);
+    const to = editor.posFromIndex(end);
+    editor.focus();
+    editor.setSelection(from, to);
+    editor.scrollIntoView({ from, to }, 40);
+    return;
+  }
+  if (textarea) {
+    textarea.focus();
+    textarea.setSelectionRange(start, end);
+  }
+}
+
+function findNextMatch(state, editor, textarea, query) {
+  const text = getEditorText(editor, textarea);
+  if (!query) {
+    return false;
+  }
+  const selection = getEditorSelectionRange(editor, textarea);
+  let startIndex = selection.end;
+  if (state.query === query && state.lastMatch) {
+    if (selection.start === state.lastMatch.start && selection.end === state.lastMatch.end) {
+      startIndex = state.lastMatch.end;
+    }
+  }
+  let index = text.indexOf(query, startIndex);
+  if (index === -1 && startIndex > 0) {
+    index = text.indexOf(query, 0);
+  }
+  if (index === -1) {
+    return false;
+  }
+  const end = index + query.length;
+  state.query = query;
+  state.lastMatch = { start: index, end };
+  setEditorSelectionRange(editor, textarea, index, end);
+  return true;
+}
+
+function replaceCurrentMatch(state, editor, textarea, query, replacement, onChange) {
+  if (!query) {
+    return false;
+  }
+  const text = getEditorText(editor, textarea);
+  let selection = getEditorSelectionRange(editor, textarea);
+  let matchStart = selection.start;
+  let matchEnd = selection.end;
+  let matched = matchEnd > matchStart && text.slice(matchStart, matchEnd) === query;
+  if (!matched && state.query === query && state.lastMatch) {
+    matchStart = state.lastMatch.start;
+    matchEnd = state.lastMatch.end;
+    matched = text.slice(matchStart, matchEnd) === query;
+  }
+  if (!matched) {
+    if (!findNextMatch(state, editor, textarea, query)) {
+      return false;
+    }
+    selection = getEditorSelectionRange(editor, textarea);
+    matchStart = selection.start;
+    matchEnd = selection.end;
+  }
+  const newText = text.slice(0, matchStart) + replacement + text.slice(matchEnd);
+  setEditorText(editor, textarea, newText, onChange);
+  const newEnd = matchStart + replacement.length;
+  state.query = query;
+  state.lastMatch = { start: matchStart, end: newEnd };
+  setEditorSelectionRange(editor, textarea, matchStart, newEnd);
+  return true;
+}
+
+function replaceAllMatches(state, editor, textarea, query, replacement, onChange) {
+  if (!query) {
+    return 0;
+  }
+  const text = getEditorText(editor, textarea);
+  let result = "";
+  let index = 0;
+  let count = 0;
+  while (true) {
+    const found = text.indexOf(query, index);
+    if (found === -1) {
+      result += text.slice(index);
+      break;
+    }
+    result += text.slice(index, found) + replacement;
+    index = found + query.length;
+    count += 1;
+  }
+  if (count > 0) {
+    setEditorText(editor, textarea, result, onChange);
+  }
+  state.query = query;
+  state.lastMatch = null;
+  return count;
+}
+
+function getComposeSearchContext() {
+  return {
+    bar: composeSearchBar,
+    searchInput: composeSearchInput,
+    replaceInput: composeReplaceInput,
+    findNextBtn: composeFindNextBtn,
+    replaceBtn: composeReplaceBtn,
+    replaceAllBtn: composeReplaceAllBtn,
+    closeBtn: composeSearchCloseBtn,
+    editor: composeEditorCm,
+    textarea: composeEditor,
+    state: composeSearchState,
+    onChange: handleComposeInput,
+  };
+}
+
+function getCreateSearchContext() {
+  return {
+    bar: createSearchBar,
+    searchInput: createSearchInput,
+    replaceInput: createReplaceInput,
+    findNextBtn: createFindNextBtn,
+    replaceBtn: createReplaceBtn,
+    replaceAllBtn: createReplaceAllBtn,
+    closeBtn: createSearchCloseBtn,
+    editor: createComposeEditor,
+    textarea: createProjectCompose,
+    state: createSearchState,
+    onChange: handleCreateComposeInput,
+  };
+}
+
+function openSearchBar(context, mode) {
+  if (!context || !context.bar) {
+    return;
+  }
+  context.bar.classList.remove("hidden");
+  const focusInput = mode === "replace" ? context.replaceInput || context.searchInput : context.searchInput;
+  if (focusInput) {
+    focusInput.focus();
+    focusInput.select();
+  }
+}
+
+function closeSearchBar(context) {
+  if (!context || !context.bar) {
+    return;
+  }
+  context.bar.classList.add("hidden");
+  resetSearchState(context.state);
+}
+
+function bindSearchControls(getContext) {
+  const context = getContext();
+  if (!context || !context.bar) {
+    return;
+  }
+  if (context.bar.dataset.bound === "true") {
+    return;
+  }
+  context.bar.dataset.bound = "true";
+  const runFind = () => {
+    const ctx = getContext();
+    const query = ctx.searchInput ? ctx.searchInput.value : "";
+    findNextMatch(ctx.state, ctx.editor, ctx.textarea, query);
+  };
+  const runReplace = () => {
+    const ctx = getContext();
+    const query = ctx.searchInput ? ctx.searchInput.value : "";
+    const replacement = ctx.replaceInput ? ctx.replaceInput.value : "";
+    replaceCurrentMatch(ctx.state, ctx.editor, ctx.textarea, query, replacement, ctx.onChange);
+  };
+  const runReplaceAll = () => {
+    const ctx = getContext();
+    const query = ctx.searchInput ? ctx.searchInput.value : "";
+    const replacement = ctx.replaceInput ? ctx.replaceInput.value : "";
+    replaceAllMatches(ctx.state, ctx.editor, ctx.textarea, query, replacement, ctx.onChange);
+  };
+  const handleEscape = (event) => {
+    if (event.key !== "Escape") {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    closeSearchBar(getContext());
+  };
+  if (context.findNextBtn) {
+    context.findNextBtn.addEventListener("click", runFind);
+  }
+  if (context.replaceBtn) {
+    context.replaceBtn.addEventListener("click", runReplace);
+  }
+  if (context.replaceAllBtn) {
+    context.replaceAllBtn.addEventListener("click", runReplaceAll);
+  }
+  if (context.closeBtn) {
+    context.closeBtn.addEventListener("click", () => closeSearchBar(getContext()));
+  }
+  if (context.searchInput) {
+    context.searchInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        runFind();
+      }
+      handleEscape(event);
+    });
+    context.searchInput.addEventListener("input", () => {
+      const ctx = getContext();
+      ctx.state.lastMatch = null;
+      ctx.state.query = ctx.searchInput ? ctx.searchInput.value : "";
+    });
+  }
+  if (context.replaceInput) {
+    context.replaceInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        runReplace();
+      }
+      handleEscape(event);
+    });
+    context.replaceInput.addEventListener("input", () => {
+      const ctx = getContext();
+      ctx.state.lastMatch = null;
+    });
+  }
 }
 
 function initCreateComposeEditor() {
@@ -2140,6 +2480,7 @@ function initCreateComposeEditor() {
     indentUnit: 2,
     tabSize: 2,
   });
+  createComposeEditor.on("change", handleCreateComposeInput);
 }
 
 function refreshCreateComposeEditor() {
@@ -2191,6 +2532,7 @@ function openComposeModal(hostId, projectName) {
   composeState.hostId = hostId;
   composeState.projectName = projectName;
   composeModal.classList.remove("hidden");
+  closeSearchBar(getComposeSearchContext());
   initComposeEditor();
   refreshComposeEditor();
   composeTarget.textContent = `${hostId} / ${projectName}`;
@@ -2229,6 +2571,7 @@ function openComposeModal(hostId, projectName) {
 
 function closeComposeModal() {
   composeModal.classList.add("hidden");
+  closeSearchBar(getComposeSearchContext());
   composeState.hostId = null;
   composeState.projectName = null;
   diffPanel.classList.add("hidden");
@@ -3445,6 +3788,7 @@ function openCreateProjectModal() {
     return;
   }
   createProjectModal.classList.remove("hidden");
+  closeSearchBar(getCreateSearchContext());
   initCreateComposeEditor();
   refreshCreateComposeEditor();
   populateCreateProjectHosts();
@@ -3473,6 +3817,7 @@ function closeCreateProjectModal() {
     return;
   }
   createProjectModal.classList.add("hidden");
+  closeSearchBar(getCreateSearchContext());
 }
 
 function openDeleteProjectModal(hostId, projectName) {
@@ -6398,6 +6743,11 @@ async function init() {
 }
 
 composeEditor.addEventListener("input", handleComposeInput);
+if (createProjectCompose) {
+  createProjectCompose.addEventListener("input", handleCreateComposeInput);
+}
+bindSearchControls(getComposeSearchContext);
+bindSearchControls(getCreateSearchContext);
 
 previewComposeBtn.addEventListener("click", () => {
   const original = composeEditor.dataset.original || "";
@@ -6823,6 +7173,7 @@ logsTailInput.addEventListener("keydown", (event) => {
 });
 logsShowStdout.addEventListener("change", updateLogsFilter);
 logsShowStderr.addEventListener("change", updateLogsFilter);
+document.addEventListener("keydown", handleComposeSearchShortcut);
 document.addEventListener("keydown", handleFindShortcut);
 document.addEventListener("keydown", handleHardRestartModifier);
 document.addEventListener("keyup", handleHardRestartModifier);

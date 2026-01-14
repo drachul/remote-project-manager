@@ -1367,6 +1367,34 @@ body {
   color: var(--muted);
 }
 
+.compose-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: #0c131d;
+  border: 1px solid rgba(243, 244, 246, 0.08);
+  border-radius: 10px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.compose-search .control {
+  gap: 4px;
+}
+
+.compose-search input {
+  padding: 4px 6px;
+  border-radius: 8px;
+}
+
+.compose-search-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
 .compose-path {
   word-break: break-all;
 }
@@ -1480,7 +1508,21 @@ body {
 
 
 .compose-editor::selection {
-  background: rgba(248, 250, 252, 0.2);
+  background: rgba(37, 99, 235, 0.55);
+}
+
+.compose-editor-wrap .CodeMirror-selected {
+  background: rgba(37, 99, 235, 0.55) !important;
+}
+
+.compose-editor-wrap .CodeMirror-focused .CodeMirror-selected {
+  background: rgba(37, 99, 235, 0.7) !important;
+}
+
+.compose-editor-wrap .CodeMirror-line::selection,
+.compose-editor-wrap .CodeMirror-line > span::selection,
+.compose-editor-wrap .CodeMirror-line > span > span::selection {
+  background: rgba(37, 99, 235, 0.7) !important;
 }
 
 .compose-editor-wrap {

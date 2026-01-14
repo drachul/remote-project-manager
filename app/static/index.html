@@ -503,6 +503,22 @@
           <div class="compose-header">
             <div class="compose-path" id="composePath"></div>
           </div>
+          <div class="compose-search hidden" id="composeSearchBar">
+            <label class="control">
+              Find
+              <input type="text" id="composeSearchInput" autocomplete="off" />
+            </label>
+            <label class="control">
+              Replace
+              <input type="text" id="composeReplaceInput" autocomplete="off" />
+            </label>
+            <div class="compose-search-actions">
+              <button class="btn subtle" id="composeFindNext" type="button">Find</button>
+              <button class="btn subtle" id="composeReplace" type="button">Replace</button>
+              <button class="btn subtle" id="composeReplaceAll" type="button">Replace all</button>
+              <button class="btn ghost" id="composeSearchClose" type="button" aria-label="Close search" title="Close">Close</button>
+            </div>
+          </div>
           <div class="compose-main">
             <div class="compose-editor-wrap">
               <textarea class="compose-editor" id="composeEditor" spellcheck="false"></textarea>
@@ -994,6 +1010,22 @@
               <textarea id="createProjectCompose" rows="10" placeholder="version: '3.9'"></textarea>
             </div>
           </label>
+          <div class="compose-search hidden" id="createSearchBar">
+            <label class="control">
+              Find
+              <input type="text" id="createSearchInput" autocomplete="off" />
+            </label>
+            <label class="control">
+              Replace
+              <input type="text" id="createReplaceInput" autocomplete="off" />
+            </label>
+            <div class="compose-search-actions">
+              <button class="btn subtle" id="createFindNext" type="button">Find</button>
+              <button class="btn subtle" id="createReplace" type="button">Replace</button>
+              <button class="btn subtle" id="createReplaceAll" type="button">Replace all</button>
+              <button class="btn ghost" id="createSearchClose" type="button" aria-label="Close search" title="Close">Close</button>
+            </div>
+          </div>
           <div class="progress create-progress hidden">
             <div class="progress-text" id="createProjectProgressText">Awaiting input</div>
             <div class="progress-track">
