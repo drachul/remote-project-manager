@@ -104,6 +104,8 @@ const deleteProjectModal = document.getElementById("deleteProjectModal");
 const closeDeleteProjectModalBtn = document.getElementById("closeDeleteProjectModal");
 const deleteProjectTarget = document.getElementById("deleteProjectTarget");
 const deleteProjectStatus = document.getElementById("deleteProjectStatus");
+const deleteProjectBackup = document.getElementById("deleteProjectBackup");
+const deleteProjectBackupToggle = document.getElementById("deleteProjectBackupToggle");
 const confirmDeleteProjectBtn = document.getElementById("confirmDeleteProject");
 const authModal = document.getElementById("authModal");
 const authUsername = document.getElementById("authUsername");
@@ -3833,6 +3835,12 @@ function openDeleteProjectModal(hostId, projectName) {
     deleteProjectStatus.textContent = "";
     deleteProjectStatus.classList.remove("error", "success");
   }
+  if (deleteProjectBackup) {
+    deleteProjectBackup.checked = false;
+  }
+  if (deleteProjectBackupToggle) {
+    deleteProjectBackupToggle.classList.toggle("hidden", !state.backupTargetsAvailable);
+  }
   if (confirmDeleteProjectBtn) {
     confirmDeleteProjectBtn.disabled = false;
   }
@@ -3844,6 +3852,9 @@ function closeDeleteProjectModal() {
     return;
   }
   deleteProjectModal.classList.add("hidden");
+  if (deleteProjectBackup) {
+    deleteProjectBackup.checked = false;
+  }
   deleteProjectState.hostId = null;
   deleteProjectState.projectName = null;
 }
@@ -3860,10 +3871,12 @@ async function submitDeleteProject() {
     deleteProjectStatus.classList.remove("error", "success");
   }
   try {
+    const deleteBackup = deleteProjectBackup ? deleteProjectBackup.checked : false;
+    const deleteQuery = deleteBackup ? "?delete_backup=1" : "";
     await api.delete(
       `/hosts/${encodeURIComponent(deleteProjectState.hostId)}/projects/${encodeURIComponent(
         deleteProjectState.projectName
-      )}`
+      )}${deleteQuery}`
     );
     showToast(`${getProjectDisplayName(deleteProjectState.hostId, deleteProjectState.projectName)}: project deleted`);
     await loadHosts();

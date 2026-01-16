@@ -4056,7 +4056,7 @@ def create_project(host_id: str, payload: ProjectCreateRequest) -> ProjectCreate
 
 
 @app.delete("/hosts/{host_id}/projects/{project}", response_model=OperationResponse)
-def delete_project(host_id: str, project: str) -> OperationResponse:
+def delete_project(host_id: str, project: str, delete_backup: bool = False) -> OperationResponse:
     host = _host(host_id)
     project_name = project.strip()
     if not project_name or project_name in (".", ".."):
@@ -4067,6 +4067,12 @@ def delete_project(host_id: str, project: str) -> OperationResponse:
         compose.delete_project(host, project_name)
     except Exception as exc:
         _handle_errors(exc)
+    if delete_backup:
+        backup = _backup_config()
+        try:
+            compose.delete_backup_project(backup, project_name)
+        except Exception as exc:
+            _handle_errors(exc)
     db_path = app.state.db_path
     if db_path:
         _ensure_db(db_path)
@@ -4087,7 +4093,7 @@ def delete_project(host_id: str, project: str) -> OperationResponse:
         host_id=host_id,
         project=project_name,
         action="delete",
-        output="Project deleted",
+        output="Project deleted" + (" (backup deleted)" if delete_backup else ""),
     )
 
 

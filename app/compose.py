@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import subprocess
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, Iterator, List, Optional, Tuple
@@ -926,6 +927,62 @@ def backup_project(
         raise ComposeError(message)
     output = result.stdout or result.stderr or ""
     return dest, output.strip()
+
+def delete_backup_project(backup: BackupConfig, project: str) -> str:
+    dest_base = backup.base_path.rstrip("/")
+    if not dest_base:
+        raise ComposeError("Backup base path is not configured.")
+    dest = f"{dest_base}/{project}"
+    protocol = (backup.protocol or "ssh").lower()
+    if protocol == "rsync":
+        user_prefix = f"{backup.user}@" if backup.user else ""
+        dest_url = f"rsync://{user_prefix}{backup.host}/{dest.lstrip('/')}"
+        env = os.environ.copy()
+        env["RSYNC_PASSWORD"] = backup.password
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src_dir = f"{tmpdir}/"
+            logger.debug(
+                "RSYNC delete command: rsync -a --delete --force --dirs %s %s",
+                src_dir,
+                dest_url,
+            )
+            try:
+                result = subprocess.run(
+                    [
+                        "rsync",
+                        "-a",
+                        "--delete",
+                        "--force",
+                        "--dirs",
+                        src_dir,
+                        dest_url,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    timeout=60,
+                    check=False,
+                )
+            except FileNotFoundError as exc:
+                raise ComposeError("rsync is not available to delete backups") from exc
+        if result.returncode != 0:
+            message = result.stderr or result.stdout or "Backup delete failed"
+            raise ComposeError(message)
+        return dest
+    command = f"rm -rf {shlex.quote(dest)}"
+    result = run_ssh_command_password(
+        backup.host,
+        backup.user,
+        backup.password,
+        command,
+        port=backup.port,
+        timeout=60,
+    )
+    if result.exit_code != 0:
+        message = result.stderr or result.stdout or "Backup delete failed"
+        raise ComposeError(message)
+    return dest
+
 
 def build_backup_command(
     host_id: str, host: HostConfig, project: str, backup: BackupConfig

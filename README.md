@@ -128,6 +128,7 @@ Requirements:
 Backup path examples (for project `myapp`):
 - `protocol=ssh` with `base_path=/Servers` writes to `/Servers/myapp` on the backup server.
 - `protocol=rsync` with `base_path=Backups/Servers` writes to `rsync://backup-host/Backups/Servers/myapp`.
+- When deleting a project from backups, `protocol=rsync` clears the contents but leaves the empty project directory.
 
 ## Scheduled backups
 
