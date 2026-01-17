@@ -516,6 +516,7 @@ body {
 
 .project-cell.project-select input,
 .project-cell.project-status .status-badges,
+.project-cell.project-updates .updates-link,
 .project-cell.project-updates .updates-icon,
 .project-cell.project-actions .action-menu {
   margin: 0 auto;
@@ -539,6 +540,19 @@ body {
 .project-cell.project-updates .updates-icon {
   font-size: 32px;
 }
+
+.updates-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+  text-decoration: none;
+}
+
+.updates-link.no-link {
+  pointer-events: none;
+}
+
 
 .action-menu {
   position: relative;

@@ -308,7 +308,9 @@
           </div>
         </td>
         <td class="project-cell project-updates">
-          <span class="material-symbols-outlined updates-icon" title="Updates"></span>
+          <a class="updates-link hidden" target="_blank" rel="noopener">
+            <span class="material-symbols-outlined updates-icon" title="Updates"></span>
+          </a>
         </td>
         <td class="project-cell project-actions">
           <div class="action-menu">
@@ -953,6 +955,10 @@
                 <label class="control" id="updateIntervalGroup">
                   Update check
                   <input type="number" min="0" id="intervalUpdateSeconds" />
+                </label>
+                <label class="toggle" id="updateRefreshToggle">
+                  <input type="checkbox" id="updateRefreshEnabled" />
+                  <span>Enable periodic update checks</span>
                 </label>
                 <label class="control">
                   Token expiry (seconds)

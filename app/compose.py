@@ -42,6 +42,14 @@ UPDATE_CHECKS_ENABLED = os.getenv("UPDATE_CHECKS_ENABLED", "true").lower() in (
     "yes",
     "on",
 )
+USER_SOURCE_LABELS = ("rpm.source_url", "rpm.update_url", "rpm.changelog_url")
+OCI_SOURCE_LABELS = (
+    "org.opencontainers.image.source",
+    "org.opencontainers.image.url",
+    "org.opencontainers.image.documentation",
+    "org.label-schema.vcs-url",
+    "org.label-schema.url",
+)
 _SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _REGISTRY_AUTH_PARAM_RE = re.compile(r'(\w+)="([^"]*)"')
 logger = logging.getLogger("rpm")
@@ -1524,6 +1532,66 @@ def _extract_images_from_config(config: object) -> List[str]:
             images.extend(_extract_images_from_config(item))
     return images
 
+def _normalize_labels(value: object) -> Dict[str, str]:
+    labels: Dict[str, str] = {}
+    if isinstance(value, dict):
+        for key, entry in value.items():
+            if key is None:
+                continue
+            labels[str(key)] = "" if entry is None else str(entry)
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                for key, entry in item.items():
+                    if key is None:
+                        continue
+                    labels[str(key)] = "" if entry is None else str(entry)
+                continue
+            if not isinstance(item, str) or "=" not in item:
+                continue
+            key, entry = item.split("=", 1)
+            labels[key] = entry
+    return labels
+
+
+def _select_label_value(labels: Dict[str, str], keys: Tuple[str, ...]) -> Optional[str]:
+    for key in keys:
+        value = labels.get(key)
+        if value:
+            return value
+    return None
+
+
+def list_service_source_overrides(host: HostConfig, project: str) -> Dict[str, str]:
+    overrides: Dict[str, str] = {}
+    try:
+        config = _compose_config_json(host, project)
+    except ComposeError:
+        return overrides
+    if not isinstance(config, dict):
+        return overrides
+    services = config.get("services", {})
+    if isinstance(services, dict):
+        service_items = services.items()
+    elif isinstance(services, list):
+        service_items = []
+        for service in services:
+            if isinstance(service, dict):
+                name = service.get("name") or service.get("service")
+                if name:
+                    service_items.append((name, service))
+    else:
+        service_items = []
+    for name, service in service_items:
+        if not isinstance(service, dict):
+            continue
+        labels = _normalize_labels(service.get("labels") or service.get("Labels") or {})
+        value = _select_label_value(labels, USER_SOURCE_LABELS)
+        if value:
+            overrides[name] = value
+    return overrides
+
+
 def list_service_images(host: HostConfig, project: str) -> Dict[str, str]:
     service_images: Dict[str, str] = {}
     try:
@@ -1753,6 +1821,87 @@ def _remote_manifest(host: HostConfig, image: str) -> dict:
         manifest.setdefault("Descriptor", {})["digest"] = digest
     return manifest
 
+def _remote_manifest_by_digest(registry: str, repository: str, digest: str) -> dict:
+    url = f"https://{registry}/v2/{repository}/manifests/{digest}"
+    headers = {
+        "Accept": (
+            "application/vnd.oci.image.manifest.v1+json, "
+            "application/vnd.docker.distribution.manifest.v2+json, "
+            "application/vnd.docker.distribution.manifest.v1+json"
+        )
+    }
+    manifest, _ = _registry_request_json(url, headers)
+    if isinstance(manifest, dict):
+        manifest.setdefault("Descriptor", {})["digest"] = digest
+    return manifest
+
+
+def _remote_config_labels(
+    image: str,
+    platform: Dict[str, Optional[str]],
+    manifest: object,
+) -> Dict[str, str]:
+    registry, repository, _, _ = _parse_image_reference(image)
+    selected_manifest: object = manifest
+    if isinstance(manifest, list):
+        digest = _select_manifest_digest(manifest, platform)
+        if digest:
+            selected_manifest = _remote_manifest_by_digest(registry, repository, digest)
+    elif isinstance(manifest, dict):
+        if isinstance(manifest.get("manifests"), list):
+            digest = _select_manifest_digest(manifest, platform)
+            if digest:
+                selected_manifest = _remote_manifest_by_digest(registry, repository, digest)
+        elif not manifest.get("config"):
+            digest = (manifest.get("Descriptor") or {}).get("digest")
+            if digest:
+                selected_manifest = _remote_manifest_by_digest(registry, repository, digest)
+    if not isinstance(selected_manifest, dict):
+        return {}
+    config = selected_manifest.get("config") or selected_manifest.get("Config") or {}
+    config_digest = None
+    if isinstance(config, dict):
+        config_digest = config.get("digest") or (config.get("Descriptor") or {}).get("digest")
+    if not config_digest:
+        return {}
+    url = f"https://{registry}/v2/{repository}/blobs/{config_digest}"
+    headers = {
+        "Accept": (
+            "application/vnd.oci.image.config.v1+json, "
+            "application/vnd.docker.container.image.v1+json, "
+            "application/json"
+        )
+    }
+    payload, _ = _registry_request_json(url, headers)
+    if not isinstance(payload, dict):
+        return {}
+    labels = _normalize_labels((payload.get("config") or payload.get("Config") or {}).get("Labels"))
+    if labels:
+        return labels
+    return _normalize_labels(payload.get("Labels") or payload.get("labels") or {})
+
+
+def _extract_source_url(labels: Dict[str, str]) -> Optional[str]:
+    return _select_label_value(labels, OCI_SOURCE_LABELS)
+
+
+def _resolve_image_source_url(
+    host: HostConfig,
+    image: str,
+    platform: Dict[str, Optional[str]],
+    manifest: object,
+    override: Optional[str],
+) -> Optional[str]:
+    _ = host
+    if override:
+        return override
+    try:
+        labels = _remote_config_labels(image, platform, manifest)
+    except ComposeError:
+        return None
+    return _extract_source_url(labels)
+
+
 def _select_manifest_digest(
     manifest: object,
     platform: Dict[str, Optional[str]],
@@ -1872,24 +2021,33 @@ def check_updates(host: HostConfig, project: str) -> Tuple[bool, bool, str, Dict
     details = "\n".join(details_lines).strip()
     return supported, updates_available, details, per_service
 
-def check_image_update(host: HostConfig, image: str) -> Optional[bool]:
+def check_image_update(
+    host: HostConfig,
+    image: str,
+    source_override: Optional[str] = None,
+) -> Tuple[Optional[bool], Optional[str]]:
     if not UPDATE_CHECKS_ENABLED:
-        return None
+        return None, None
     local_digests, local_error = _local_repo_digests(host, image)
     local_platform = _local_image_platform(host, image)
+    source_url = source_override
     try:
         manifest = _remote_manifest(host, image)
     except ComposeError:
-        return None
+        return None, source_url
+    source_url = source_url or _resolve_image_source_url(
+        host, image, local_platform, manifest, source_override
+    )
     remote_digest = _select_manifest_digest(manifest, local_platform, local_digests)
     if not remote_digest:
-        return None
+        return None, source_url
     local_digest_list = _digest_list(local_digests)
     if local_digest_list:
-        return remote_digest not in local_digest_list
+        return remote_digest not in local_digest_list, source_url
     if local_error:
-        return True
-    return True
+        return True, source_url
+    return True, source_url
+
 
 def apply_updates(host: HostConfig, project: str) -> Tuple[bool, str]:
     overall, _, _ = project_status(host, project)

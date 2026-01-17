@@ -74,6 +74,8 @@ from .models import (
     ProjectPortsResponse,
     UpdateApplyResponse,
     UpdateCheckResponse,
+    UpdateRefreshRequest,
+    UpdateRefreshResponse,
     AuthTokenRequest,
     PasswordChangeRequest,
     UserConfigEntry,
@@ -180,12 +182,15 @@ async def load_settings() -> None:
     app.state.update_interval_seconds = _load_interval_setting(
         "update_interval_seconds", _update_interval_seconds()
     )
+    app.state.update_refresh_enabled = _load_update_refresh_enabled()
     app.state.event_status = _init_event_status()
     now = _now()
     if app.state.state_interval_seconds > 0:
         _set_event_next_run("status_refresh", now + timedelta(seconds=app.state.state_interval_seconds))
-    if app.state.update_interval_seconds > 0:
+    if app.state.update_interval_seconds > 0 and app.state.update_refresh_enabled:
         _set_event_next_run("update_refresh", now + timedelta(seconds=app.state.update_interval_seconds))
+    else:
+        _set_event_next_run("update_refresh", None)
     if app.state.db_path:
         _set_event_next_run("token_cleanup", now + timedelta(seconds=TOKEN_CLEANUP_INTERVAL_SECONDS))
     if FD_TRACK_INTERVAL_SECONDS > 0:
@@ -326,7 +331,7 @@ def _required_roles_for_request(path: str, method: str) -> set[str]:
 
     if path.startswith("/config/"):
         return roles_admin
-    if path in ("/state/interval", "/update/interval", "/config/token-expiry"):
+    if path in ("/state/interval", "/update/interval", "/update/refresh-enabled", "/config/token-expiry"):
         return roles_admin
     if path.startswith("/backup/schedule"):
         return roles_admin
@@ -823,6 +828,7 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
                 "id TEXT NOT NULL, "
                 "status TEXT, "
                 "update_available BOOLEAN DEFAULT 0, "
+                "update_source_url TEXT, "
                 "update_checked_at DATETIME, "
                 "refreshed_at DATETIME, "
                 "PRIMARY KEY (host_id, project_id, id), "
@@ -859,6 +865,7 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
                 ")"
             )
             _ensure_column(conn, "service_state", "update_checked_at", "DATETIME")
+            _ensure_column(conn, "service_state", "update_source_url", "TEXT")
             _ensure_column(conn, "backup_state", "last_backup_message", "TEXT")
             _ensure_column(conn, "backup_state", "last_backup_failure", "TEXT")
             _ensure_column(conn, "backup_state", "cron_override", "TEXT")
@@ -968,6 +975,37 @@ def _load_backup_cron() -> Optional[str]:
     if not enabled:
         return None
     return cron
+
+def _load_update_refresh_enabled() -> bool:
+    path = app.state.db_path
+    if not path:
+        return True
+    _ensure_db(path)
+    value = _read_setting(path, "update_refresh_enabled")
+    if value is None:
+        _write_setting(path, "update_refresh_enabled", "1")
+        return True
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _persist_update_refresh_enabled(enabled: bool) -> None:
+    path = app.state.db_path
+    if not path:
+        return
+    _ensure_db(path)
+    _write_setting(path, "update_refresh_enabled", "1" if enabled else "0")
+
+
+async def _set_update_refresh_enabled(enabled: bool) -> None:
+    await _stop_update_task()
+    app.state.update_refresh_enabled = bool(enabled)
+    app.state.update_task = _start_update_task()
+    if app.state.update_interval_seconds > 0 and app.state.update_refresh_enabled:
+        _set_event_next_run("update_refresh", _now() + timedelta(seconds=app.state.update_interval_seconds))
+    else:
+        _set_event_next_run("update_refresh", None)
+    _persist_update_refresh_enabled(app.state.update_refresh_enabled)
+
 
 
 def _load_backup_cron_state() -> tuple[Optional[str], bool]:
@@ -1634,13 +1672,13 @@ def _load_state_from_db(host_id: Optional[str] = None) -> dict:
         services_by_project: Dict[tuple[str, str], List[dict]] = {}
         if host_id:
             service_rows = conn.execute(
-                "SELECT host_id, project_id, id, status, update_available, update_checked_at, refreshed_at "
+                "SELECT host_id, project_id, id, status, update_available, update_source_url, update_checked_at, refreshed_at "
                 "FROM service_state WHERE host_id = ?",
                 (host_id,),
             ).fetchall()
         else:
             service_rows = conn.execute(
-                "SELECT host_id, project_id, id, status, update_available, update_checked_at, refreshed_at "
+                "SELECT host_id, project_id, id, status, update_available, update_source_url, update_checked_at, refreshed_at "
                 "FROM service_state"
             ).fetchall()
         for row in service_rows:
@@ -1651,6 +1689,7 @@ def _load_state_from_db(host_id: Optional[str] = None) -> dict:
                     "id": row["id"],
                     "status": row["status"],
                     "update_available": bool(row["update_available"]),
+                    "update_source_url": row["update_source_url"],
                     "update_checked_at": _parse_timestamp(row["update_checked_at"]),
                     "refreshed_at": _parse_timestamp(row["refreshed_at"]),
                 }
@@ -2001,40 +2040,33 @@ def _update_service_update_state(
     service_id: str,
     update_available: Optional[bool],
     checked_at: datetime,
+    update_source_url: Optional[str],
 ) -> None:
     path = app.state.db_path
     if not path:
         return
     _ensure_db(path)
     with _open_db(path) as conn:
-        if update_available is None:
-            conn.execute(
-                "INSERT INTO service_state (host_id, project_id, id) VALUES (?, ?, ?) "
-                "ON CONFLICT(host_id, project_id, id) DO NOTHING",
-                (host_id, project_id, service_id),
-            )
-        else:
-            conn.execute(
-                "INSERT INTO service_state (host_id, project_id, id, update_available, update_checked_at) "
-                "VALUES (?, ?, ?, ?, ?) "
-                "ON CONFLICT(host_id, project_id, id) DO UPDATE SET "
-                "update_available = excluded.update_available, "
-                "update_checked_at = excluded.update_checked_at",
-                (
-                    host_id,
-                    project_id,
-                    service_id,
-                    1 if update_available else 0,
-                    checked_at.isoformat(),
-                ),
-            )
-
-        if update_available is None:
-            conn.execute(
-                "UPDATE service_state SET update_checked_at = ? "
-                "WHERE host_id = ? AND project_id = ? AND id = ?",
-                (checked_at.isoformat(), host_id, project_id, service_id),
-            )
+        update_value = None
+        if update_available is not None:
+            update_value = 1 if update_available else 0
+        conn.execute(
+            "INSERT INTO service_state "
+            "(host_id, project_id, id, update_available, update_checked_at, update_source_url) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(host_id, project_id, id) DO UPDATE SET "
+            "update_available = COALESCE(excluded.update_available, service_state.update_available), "
+            "update_checked_at = COALESCE(excluded.update_checked_at, service_state.update_checked_at), "
+            "update_source_url = COALESCE(excluded.update_source_url, service_state.update_source_url)",
+            (
+                host_id,
+                project_id,
+                service_id,
+                update_value,
+                checked_at.isoformat(),
+                update_source_url,
+            ),
+        )
 
         rows = conn.execute(
             "SELECT status, update_available, refreshed_at FROM service_state "
@@ -2193,7 +2225,7 @@ def _start_state_task() -> Optional[asyncio.Task]:
 
 
 def _start_update_task() -> Optional[asyncio.Task]:
-    if app.state.update_interval_seconds <= 0:
+    if app.state.update_interval_seconds <= 0 or not app.state.update_refresh_enabled:
         return None
     return asyncio.create_task(_update_refresh_loop())
 
@@ -2333,7 +2365,7 @@ async def _set_update_interval(seconds: int) -> None:
     await _stop_update_task()
     app.state.update_interval_seconds = max(0, seconds)
     app.state.update_task = _start_update_task()
-    if app.state.update_interval_seconds > 0:
+    if app.state.update_interval_seconds > 0 and app.state.update_refresh_enabled:
         _set_event_next_run("update_refresh", _now() + timedelta(seconds=app.state.update_interval_seconds))
     else:
         _set_event_next_run("update_refresh", None)
@@ -2511,6 +2543,13 @@ async def _refresh_update_state(host_ids: Optional[List[str]] = None) -> datetim
     except Exception:
         return now
 
+    try:
+        service_sources = await asyncio.to_thread(
+            compose.list_service_source_overrides, host, project_name
+        )
+    except Exception:
+        service_sources = {}
+
     async with app.state.state_lock:
         await asyncio.to_thread(
             _sync_project_services, host_id, project_id, list(service_images.keys())
@@ -2529,8 +2568,9 @@ async def _refresh_update_state(host_ids: Optional[List[str]] = None) -> datetim
     if not allowed:
         logger.info("Update check skipped due to rate limit")
         return now
-    update_available = await asyncio.to_thread(
-        compose.check_image_update, host, service_images[service_id]
+    source_override = service_sources.get(service_id)
+    update_available, source_url = await asyncio.to_thread(
+        compose.check_image_update, host, service_images[service_id], source_override
     )
     async with app.state.state_lock:
         await asyncio.to_thread(
@@ -2540,6 +2580,7 @@ async def _refresh_update_state(host_ids: Optional[List[str]] = None) -> datetim
             service_id,
             update_available,
             now,
+            source_url,
         )
     logger.info(
         "Update check complete host=%s project=%s service=%s update=%s",
@@ -2745,8 +2786,10 @@ def _build_event_status_entries() -> List[EventStatusEntry]:
             enabled = interval > 0
         elif key == "update_refresh":
             interval = app.state.update_interval_seconds
-            enabled = interval > 0 and compose.UPDATE_CHECKS_ENABLED
-            if not compose.UPDATE_CHECKS_ENABLED and not last_result:
+            enabled = interval > 0 and compose.UPDATE_CHECKS_ENABLED and app.state.update_refresh_enabled
+            if not app.state.update_refresh_enabled and not last_result:
+                last_result = "Periodic update checks disabled"
+            elif not compose.UPDATE_CHECKS_ENABLED and not last_result:
                 last_result = "Update checks disabled"
         elif key == "backup_schedule":
             interval = None
@@ -4679,6 +4722,19 @@ async def update_update_interval(
 async def get_backup_schedule_summary() -> BackupScheduleSummaryResponse:
     items = await asyncio.to_thread(_build_backup_schedule_summary)
     return BackupScheduleSummaryResponse(items=items)
+
+@app.get("/update/refresh-enabled", response_model=UpdateRefreshResponse)
+async def get_update_refresh_enabled() -> UpdateRefreshResponse:
+    return UpdateRefreshResponse(enabled=bool(app.state.update_refresh_enabled))
+
+
+@app.put("/update/refresh-enabled", response_model=UpdateRefreshResponse)
+async def update_update_refresh_enabled(
+    payload: UpdateRefreshRequest,
+) -> UpdateRefreshResponse:
+    await _set_update_refresh_enabled(payload.enabled)
+    return UpdateRefreshResponse(enabled=bool(app.state.update_refresh_enabled))
+
 
 
 @app.get("/backup/schedule", response_model=BackupScheduleResponse)

@@ -144,6 +144,8 @@ const addUserConfigBtn = document.getElementById("addUserConfig");
 const intervalStateInput = document.getElementById("intervalStateSeconds");
 const intervalUpdateInput = document.getElementById("intervalUpdateSeconds");
 const updateIntervalGroup = document.getElementById("updateIntervalGroup");
+const updateRefreshToggle = document.getElementById("updateRefreshToggle");
+const updateRefreshEnabledInput = document.getElementById("updateRefreshEnabled");
 const tokenExpiryInput = document.getElementById("tokenExpirySeconds");
 const saveIntervalsBtn = document.getElementById("saveIntervals");
 const configStatus = document.getElementById("configStatus");
@@ -297,6 +299,7 @@ const state = {
   stateIntervalSeconds: null,
   backupScheduleAvailable: true,
   updatesEnabled: true,
+  updateRefreshEnabled: true,
   backupTargetsAvailable: true,
   authToken: null,
   authUser: "",
@@ -578,7 +581,14 @@ function updateIntervalVisibility() {
   }
   const show = Boolean(state.updatesEnabled);
   updateIntervalGroup.classList.toggle("hidden", !show);
-  intervalUpdateInput.disabled = !show;
+  if (updateRefreshToggle) {
+    updateRefreshToggle.classList.toggle("hidden", !show);
+  }
+  if (updateRefreshEnabledInput) {
+    updateRefreshEnabledInput.disabled = !show;
+  }
+  const refreshEnabled = show && state.updateRefreshEnabled !== false;
+  intervalUpdateInput.disabled = !refreshEnabled;
 }
 
 function updateProjectFilterState() {
@@ -4508,12 +4518,17 @@ async function loadIntervals() {
     return;
   }
   try {
-    const [stateInterval, updateInterval] = await Promise.all([
+    const [stateInterval, updateInterval, updateRefresh] = await Promise.all([
       api.get("/state/interval"),
       api.get("/update/interval"),
+      api.get("/update/refresh-enabled"),
     ]);
     intervalStateInput.value = stateInterval.seconds;
     intervalUpdateInput.value = updateInterval.seconds;
+    if (updateRefreshEnabledInput) {
+      updateRefreshEnabledInput.checked = Boolean(updateRefresh.enabled);
+    }
+    state.updateRefreshEnabled = Boolean(updateRefresh.enabled);
     const tokenExpiry = await api.get("/config/token-expiry");
     tokenExpiryInput.value = tokenExpiry.seconds;
     state.stateIntervalSeconds = stateInterval.seconds;
@@ -4541,6 +4556,11 @@ async function saveIntervals() {
   setConfigStatus("Saving settings...");
   try {
     await api.put("/state/interval", { seconds: stateSeconds });
+    if (updateRefreshEnabledInput) {
+      const refreshEnabled = Boolean(updateRefreshEnabledInput.checked);
+      await api.put("/update/refresh-enabled", { enabled: refreshEnabled });
+      state.updateRefreshEnabled = refreshEnabled;
+    }
     if (state.updatesEnabled) {
       const updateSeconds = Number.parseInt(intervalUpdateInput.value, 10);
       if (Number.isNaN(updateSeconds) || updateSeconds < 0) {
@@ -4785,6 +4805,7 @@ function buildProjectEntries() {
       const stateProject = stateHost?.projects?.find((item) => item.project === projectName);
       const projectPath = projectPaths[projectName] || stateProject?.path || "";
       const services = stateProject?.services || [];
+      const updateSourceUrl = services.find((service) => service.update_available && service.update_source_url)?.update_source_url || null;
       const backupEnabled =
         (host.backup_enabled ? host.backup_enabled[projectName] : undefined) ??
         stateProject?.backup_enabled ??
@@ -4823,6 +4844,7 @@ function buildProjectEntries() {
         lastBackupFailure,
         services,
         serviceCount: services.length,
+        updateSourceUrl,
       });
     });
   });
@@ -5423,20 +5445,50 @@ function renderProjectList() {
     statusIcon.title = `Status: ${statusInfo.label}`;
 
     const updatesIcon = row.querySelector(".updates-icon");
+    const updatesLink = row.querySelector(".updates-link");
+    const updateUrl = entry.updateSourceUrl || "";
+    const showUpdates = state.updatesEnabled && updatesInfo.className === "updates-yes";
     updatesIcon.classList.remove("yes");
     if (!state.updatesEnabled) {
       updatesIcon.textContent = "";
       updatesIcon.title = "Updates disabled";
       updatesIcon.classList.add("hidden");
-    } else {
+      if (updatesLink) {
+        updatesLink.classList.add("hidden");
+        updatesLink.classList.remove("no-link");
+        updatesLink.removeAttribute("href");
+        updatesLink.removeAttribute("target");
+        updatesLink.removeAttribute("rel");
+      }
+    } else if (showUpdates) {
+      updatesIcon.classList.add("yes");
+      updatesIcon.textContent = "published_with_changes";
+      updatesIcon.title = updateUrl ? "Updates available (view source)" : "Updates available";
       updatesIcon.classList.remove("hidden");
-      if (updatesInfo.className === "updates-yes") {
-        updatesIcon.classList.add("yes");
-        updatesIcon.textContent = "published_with_changes";
-        updatesIcon.title = "Updates available";
-      } else {
-        updatesIcon.textContent = "";
-        updatesIcon.title = "Updates: none";
+      if (updatesLink) {
+        updatesLink.classList.remove("hidden");
+        if (updateUrl) {
+          updatesLink.href = updateUrl;
+          updatesLink.target = "_blank";
+          updatesLink.rel = "noopener";
+          updatesLink.classList.remove("no-link");
+        } else {
+          updatesLink.removeAttribute("href");
+          updatesLink.removeAttribute("target");
+          updatesLink.removeAttribute("rel");
+          updatesLink.classList.add("no-link");
+        }
+      }
+    } else {
+      updatesIcon.textContent = "";
+      updatesIcon.title = "Updates: none";
+      updatesIcon.classList.add("hidden");
+      if (updatesLink) {
+        updatesLink.classList.add("hidden");
+        updatesLink.classList.remove("no-link");
+        updatesLink.removeAttribute("href");
+        updatesLink.removeAttribute("target");
+        updatesLink.removeAttribute("rel");
       }
     }
 
@@ -5591,20 +5643,41 @@ function renderProjectList() {
 
         const updatesIcon = document.createElement("span");
         updatesIcon.className = "material-symbols-outlined updates-icon service-updates-icon";
+        const updatesLink = document.createElement("a");
+        updatesLink.className = "updates-link service-updates-link";
+        updatesLink.appendChild(updatesIcon);
+        const updateUrl = service.update_source_url || "";
         if (state.updatesEnabled && service.update_available) {
           updatesIcon.classList.add("yes");
           updatesIcon.textContent = "published_with_changes";
-          updatesIcon.title = "Updates available";
+          updatesIcon.title = updateUrl ? "Updates available (view source)" : "Updates available";
+          updatesLink.classList.remove("hidden");
+          if (updateUrl) {
+            updatesLink.href = updateUrl;
+            updatesLink.target = "_blank";
+            updatesLink.rel = "noopener";
+            updatesLink.classList.remove("no-link");
+          } else {
+            updatesLink.removeAttribute("href");
+            updatesLink.removeAttribute("target");
+            updatesLink.removeAttribute("rel");
+            updatesLink.classList.add("no-link");
+          }
         } else {
           updatesIcon.classList.add("hidden");
           updatesIcon.textContent = "";
           updatesIcon.title = state.updatesEnabled ? "Updates: none" : "Updates disabled";
+          updatesLink.classList.add("hidden");
+          updatesLink.classList.remove("no-link");
+          updatesLink.removeAttribute("href");
+          updatesLink.removeAttribute("target");
+          updatesLink.removeAttribute("rel");
         }
 
         const iconsWrap = document.createElement("div");
         iconsWrap.className = "service-icons";
         iconsWrap.appendChild(badge);
-        iconsWrap.appendChild(updatesIcon);
+        iconsWrap.appendChild(updatesLink);
         meta.appendChild(iconsWrap);
 
         const actions = document.createElement("div");
@@ -7167,6 +7240,12 @@ if (addUserConfigBtn) {
     }
     const entry = buildUserConfigEntry(null, true);
     userConfigList.prepend(entry);
+  });
+}
+if (updateRefreshEnabledInput) {
+  updateRefreshEnabledInput.addEventListener("change", () => {
+    state.updateRefreshEnabled = Boolean(updateRefreshEnabledInput.checked);
+    updateIntervalVisibility();
   });
 }
 if (saveIntervalsBtn) {

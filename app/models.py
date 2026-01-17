@@ -232,6 +232,7 @@ class ServiceStateEntry(BaseModel):
     id: str
     status: Optional[str] = None
     update_available: bool = False
+    update_source_url: Optional[str] = None
     refreshed_at: Optional[datetime] = None
     update_checked_at: Optional[datetime] = None
 
@@ -273,6 +274,14 @@ class IntervalRequest(BaseModel):
 
 class IntervalResponse(BaseModel):
     seconds: int
+
+
+class UpdateRefreshRequest(BaseModel):
+    enabled: bool
+
+
+class UpdateRefreshResponse(BaseModel):
+    enabled: bool
 
 
 class BackupSettingsRequest(BaseModel):
