@@ -4035,10 +4035,10 @@ def create_auth_token(payload: AuthTokenRequest) -> str:
         raise HTTPException(status_code=400, detail="Username is required.")
     stored_password, role = _get_user_credentials(username)
     if not stored_password:
-        raise HTTPException(status_code=401, detail="Invalid username or auth.")
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
     provided = _hash_password(_secret_seed(), payload.password)
     if not hmac.compare_digest(stored_password, provided):
-        raise HTTPException(status_code=401, detail="Invalid username or auth.")
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
     token_id = str(uuid.uuid4())
     expiration = _now() + timedelta(seconds=_token_expiry_seconds())
     path = _require_db_path()

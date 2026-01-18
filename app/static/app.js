@@ -247,11 +247,28 @@ function updateBulkRestartLabel(active) {
   button.setAttribute("aria-label", label);
 }
 
+function updateActionTooltip(button, value) {
+  if (!button) {
+    return;
+  }
+  if (!button.dataset.baseTooltip) {
+    button.dataset.baseTooltip =
+      button.getAttribute("title") || button.getAttribute("aria-label") || "";
+  }
+  const tooltip = value || button.dataset.baseTooltip;
+  if (!tooltip) {
+    return;
+  }
+  button.setAttribute("title", tooltip);
+  button.setAttribute("aria-label", tooltip);
+}
+
 function updateShiftStartButtons() {
   if (!projectList) {
     return;
   }
   const shiftActive = document.body?.classList.contains("hard-restart-active");
+  const updateShiftActive = shiftActive && state.updatesEnabled;
   projectList.querySelectorAll(".project-row").forEach((row) => {
     if (row.dataset.allowProjectActions !== "true") {
       return;
@@ -281,10 +298,31 @@ function updateShiftStartButtons() {
       stopBtn.classList.toggle("hidden", !showStop);
     }
     startBtn.classList.toggle("shift-start", shiftOverride);
+    updateActionTooltip(
+      startBtn,
+      shiftOverride ? "Start project again" : null
+    );
+    const restartBtn = row.querySelector('.project-action[data-action="restart"]');
     const updateBtn = row.querySelector('.project-action[data-action="update"]');
     if (updateBtn) {
-      updateBtn.classList.toggle("shift-update", shiftActive && state.updatesEnabled);
+      updateBtn.classList.toggle("shift-update", updateShiftActive);
     }
+    updateActionTooltip(
+      restartBtn,
+      shiftActive ? "Hard restart project" : null
+    );
+    updateActionTooltip(
+      updateBtn,
+      updateShiftActive ? "Check updates (no image updates applied)" : null
+    );
+    row
+      .querySelectorAll('.service-action[data-action="restart"]')
+      .forEach((button) => {
+        updateActionTooltip(
+          button,
+          shiftActive ? "Hard restart service" : null
+        );
+      });
   });
 }
 
@@ -404,21 +442,65 @@ const DEFAULT_CREATE_COMPOSE = `services:\n  app:\n    image: nginx:latest\n    
 const AUTH_COOKIE_NAME = "rpm_token";
 
 
-async function handleUnauthorized(response) {
-  let message = "Unauthorized.";
-  const text = await response.text();
-  if (text) {
-    try {
-      const payload = JSON.parse(text);
-      if (payload && payload.detail) {
-        message = payload.detail;
-      } else {
-        message = text;
-      }
-    } catch (err) {
-      message = text;
-    }
+function normalizeErrorDetail(detail) {
+  if (detail === null || detail === undefined) {
+    return "";
   }
+  if (typeof detail === "string") {
+    return detail;
+  }
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((entry) => {
+        if (entry && typeof entry === "object") {
+          return entry.msg || entry.message || "";
+        }
+        return String(entry);
+      })
+      .filter(Boolean);
+    return messages.join(" ");
+  }
+  if (typeof detail === "object") {
+    if (detail.message) {
+      return String(detail.message);
+    }
+    if (detail.detail) {
+      return normalizeErrorDetail(detail.detail);
+    }
+    return "";
+  }
+  return String(detail);
+}
+
+function parseErrorMessage(text, fallback) {
+  if (!text) {
+    return fallback || "Request failed.";
+  }
+  try {
+    const payload = JSON.parse(text);
+    if (typeof payload === "string") {
+      return payload;
+    }
+    if (payload && typeof payload === "object") {
+      const detail = normalizeErrorDetail(payload.detail);
+      if (detail) {
+        return detail;
+      }
+      const message = normalizeErrorDetail(payload.message || payload.error);
+      if (message) {
+        return message;
+      }
+      return fallback || "Request failed.";
+    }
+  } catch (err) {
+    return text;
+  }
+  return text || fallback || "Request failed.";
+}
+
+async function handleUnauthorized(response) {
+  const text = await response.text();
+  const message = parseErrorMessage(text, "Unauthorized.");
   clearAuthToken();
   showAuthModal(message);
   throw new Error(message);
@@ -436,17 +518,7 @@ async function apiRequest(path, options = {}) {
   }
   if (!response.ok) {
     const text = await response.text();
-    let message = text || response.statusText;
-    if (text) {
-      try {
-        const payload = JSON.parse(text);
-        if (payload && payload.detail) {
-          message = payload.detail;
-        }
-      } catch (err) {
-        message = text || response.statusText;
-      }
-    }
+    const message = parseErrorMessage(text, response.statusText);
     throw new Error(message);
   }
   return response;
@@ -509,7 +581,7 @@ function createEventStream(url, handlers) {
       }
       if (!response.ok) {
         const text = await response.text();
-        throw new Error(text || response.statusText);
+        throw new Error(parseErrorMessage(text, response.statusText));
       }
       if (!response.body) {
         throw new Error("Stream unavailable.");
@@ -3817,7 +3889,7 @@ async function submitAuth() {
     });
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(text || response.statusText);
+      throw new Error(parseErrorMessage(text, response.statusText));
     }
     const token = (await response.text()).trim();
     if (!token) {
@@ -5767,17 +5839,17 @@ function renderProjectList() {
 
         const startBtn = createServiceActionButton(
           "play_arrow",
-          "Start service (docker compose start)",
+          "Start service",
           "start"
         );
         const stopBtn = createServiceActionButton(
           "stop",
-          "Stop service (docker compose stop)",
+          "Stop service",
           "stop"
         );
         const restartBtn = createServiceActionButton(
           "restart_alt",
-          "Restart service (docker compose restart)",
+          "Restart service",
           "restart"
         );
 
@@ -5903,6 +5975,7 @@ function renderProjectList() {
   });
   updateBulkVisibility();
   updateBulkBackupAvailability();
+  updateShiftStartButtons();
 }
 
 function renderLists() {
