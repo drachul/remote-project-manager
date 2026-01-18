@@ -1684,6 +1684,29 @@ def _local_image_platform(host: HostConfig, image: str) -> Dict[str, Optional[st
         return {}
     return {"architecture": architecture, "os": os_name, "variant": variant}
 
+
+def _local_image_labels(host: HostConfig, image: str) -> Dict[str, str]:
+    result = _run_docker(
+        host, ["image", "inspect", "--format", "{{json .Config.Labels}}", image]
+    )
+    if result.exit_code != 0:
+        return {}
+    output = (result.stdout or "").strip()
+    if not output:
+        return {}
+    for line in output.splitlines():
+        value = line.strip()
+        if not value or value == "null":
+            continue
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            continue
+        labels = _normalize_labels(parsed)
+        if labels:
+            return labels
+    return {}
+
 def _parse_image_reference(image: str) -> Tuple[str, str, str, bool]:
     name = image
     reference = "latest"
@@ -1917,7 +1940,8 @@ def _resolve_image_links(
     manifest: object,
     overrides: Optional[Dict[str, str]],
 ) -> Dict[str, Optional[str]]:
-    _ = host
+    _ = platform
+    _ = manifest
     links = {"project_url": None, "source_url": None, "documentation_url": None}
     if overrides:
         for key in links:
@@ -1926,12 +1950,11 @@ def _resolve_image_links(
                 links[key] = value
     if all(links.values()):
         return links
-    try:
-        labels = _remote_config_labels(image, platform, manifest)
-    except ComposeError:
+    labels = _local_image_labels(host, image)
+    if not labels:
         return links
-    remote_links = _extract_image_links(labels)
-    for key, value in remote_links.items():
+    local_links = _extract_image_links(labels)
+    for key, value in local_links.items():
         if not links.get(key) and value:
             links[key] = value
     return links
@@ -1943,6 +1966,16 @@ def _resolve_update_source_url(
     if update_override:
         return update_override
     return links.get("source_url") or links.get("documentation_url") or links.get("project_url")
+
+
+def resolve_image_links(
+    host: HostConfig,
+    image: str,
+) -> Dict[str, Optional[str]]:
+    labels = _local_image_labels(host, image)
+    if not labels:
+        return {"project_url": None, "source_url": None, "documentation_url": None}
+    return _extract_image_links(labels)
 
 
 def _select_manifest_digest(

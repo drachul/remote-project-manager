@@ -933,6 +933,67 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition
     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+def _normalize_link_value(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    trimmed = value.strip()
+    return trimmed or None
+
+
+def _load_service_link_state(host_id: str, project_id: str) -> Dict[str, Dict[str, Optional[str]]]:
+    path = app.state.db_path
+    if not path:
+        return {}
+    _ensure_db(path)
+    with _open_db(path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, project_url, source_url, documentation_url "
+            "FROM service_state WHERE host_id = ? AND project_id = ?",
+            (host_id, project_id),
+        ).fetchall()
+    links: Dict[str, Dict[str, Optional[str]]] = {}
+    for row in rows:
+        links[row["id"]] = {
+            "project_url": _normalize_link_value(row["project_url"]),
+            "source_url": _normalize_link_value(row["source_url"]),
+            "documentation_url": _normalize_link_value(row["documentation_url"]),
+        }
+    return links
+
+
+def _update_service_link_state(
+    host_id: str,
+    project_id: str,
+    link_values: Dict[str, Dict[str, Optional[str]]],
+) -> None:
+    if not link_values:
+        return
+    path = app.state.db_path
+    if not path:
+        return
+    _ensure_db(path)
+    with _open_db(path) as conn:
+        for service_id, links in link_values.items():
+            conn.execute(
+                "INSERT INTO service_state "
+                "(host_id, project_id, id, project_url, source_url, documentation_url) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(host_id, project_id, id) DO UPDATE SET "
+                "project_url = COALESCE(excluded.project_url, service_state.project_url), "
+                "source_url = COALESCE(excluded.source_url, service_state.source_url), "
+                "documentation_url = COALESCE(excluded.documentation_url, service_state.documentation_url)",
+                (
+                    host_id,
+                    project_id,
+                    service_id,
+                    _normalize_link_value(links.get("project_url")),
+                    _normalize_link_value(links.get("source_url")),
+                    _normalize_link_value(links.get("documentation_url")),
+                ),
+            )
+
+
 def _read_interval_setting(path: str, key: str) -> Optional[int]:
     with _open_db(path) as conn:
         row = conn.execute(
@@ -2542,6 +2603,23 @@ async def _refresh_status_state(host_ids: Optional[List[str]] = None) -> datetim
         _build_state_snapshot, config, host_ids, True, False
     )
     await _apply_state_snapshot(hosts_data, True, False, now)
+    for host_id, data in hosts_data.items():
+        if data.get("_project_list_failed"):
+            continue
+        for project in data.get("projects", []):
+            project_name = project.get("project")
+            if not project_name:
+                continue
+            project_id = _project_id(host_id, project_name)
+            try:
+                await _refresh_project_links(host_id, project_name, project_id)
+            except Exception:
+                logger.debug(
+                    "Service link refresh failed host=%s project=%s",
+                    host_id,
+                    project_name,
+                    exc_info=True,
+                )
     logger.info("Status state refreshed")
     return now
 
@@ -2575,6 +2653,15 @@ async def _refresh_status_candidate(
                 service_statuses,
                 _now(),
                 overall,
+            )
+        try:
+            await _refresh_project_links(host_id, project_name, project_id)
+        except Exception:
+            logger.debug(
+                "Service link refresh failed host=%s project=%s",
+                host_id,
+                project_name,
+                exc_info=True,
             )
         logger.info("Status refreshed host=%s project=%s", host_id, project_name)
     except Exception:
@@ -2670,6 +2757,82 @@ async def _refresh_update_state(host_ids: Optional[List[str]] = None) -> datetim
     return now
 
 
+async def _refresh_project_links(
+    host_id: str,
+    project_name: str,
+    project_id: str,
+) -> None:
+    host = _host(host_id)
+    try:
+        service_images = await asyncio.to_thread(
+            compose.list_service_images, host, project_name
+        )
+    except Exception:
+        service_images = {}
+    try:
+        service_links = await asyncio.to_thread(
+            compose.list_service_link_overrides, host, project_name
+        )
+    except Exception:
+        service_links = {}
+    if not service_images and not service_links:
+        return
+    existing_links = await asyncio.to_thread(
+        _load_service_link_state, host_id, project_id
+    )
+    service_ids = set(service_images) | set(service_links) | set(existing_links)
+    if not service_ids:
+        return
+    local_link_cache: Dict[str, Dict[str, Optional[str]]] = {}
+    link_updates: Dict[str, Dict[str, Optional[str]]] = {}
+    for service_id in service_ids:
+        overrides = service_links.get(service_id, {})
+        existing = existing_links.get(service_id, {})
+        project_url = _normalize_link_value(overrides.get("project_url"))
+        source_url = _normalize_link_value(overrides.get("source_url"))
+        documentation_url = _normalize_link_value(overrides.get("documentation_url"))
+        image = service_images.get(service_id)
+        if image and any(
+            value is None for value in (project_url, source_url, documentation_url)
+        ):
+            if image in local_link_cache:
+                local_links = local_link_cache[image]
+            else:
+                try:
+                    local_links = await asyncio.to_thread(
+                        compose.resolve_image_links, host, image
+                    )
+                except Exception:
+                    local_links = {}
+                local_link_cache[image] = local_links
+            if project_url is None:
+                project_url = _normalize_link_value(local_links.get("project_url"))
+            if source_url is None:
+                source_url = _normalize_link_value(local_links.get("source_url"))
+            if documentation_url is None:
+                documentation_url = _normalize_link_value(
+                    local_links.get("documentation_url")
+                )
+        if project_url is None:
+            project_url = _normalize_link_value(existing.get("project_url"))
+        if source_url is None:
+            source_url = _normalize_link_value(existing.get("source_url"))
+        if documentation_url is None:
+            documentation_url = _normalize_link_value(existing.get("documentation_url"))
+        if project_url or source_url or documentation_url:
+            link_updates[service_id] = {
+                "project_url": project_url,
+                "source_url": source_url,
+                "documentation_url": documentation_url,
+            }
+    if not link_updates:
+        return
+    async with app.state.state_lock:
+        await asyncio.to_thread(
+            _update_service_link_state, host_id, project_id, link_updates
+        )
+
+
 async def _refresh_project_state(host_id: str, project: str) -> datetime:
     host = _host(host_id)
     try:
@@ -2698,6 +2861,15 @@ async def _refresh_project_state(host_id: str, project: str) -> datetime:
                 service_statuses,
                 _now(),
                 overall,
+            )
+        try:
+            await _refresh_project_links(host_id, project, project_id)
+        except Exception:
+            logger.debug(
+                "Service link refresh failed host=%s project=%s",
+                host_id,
+                project,
+                exc_info=True,
             )
     except Exception as exc:
         async with app.state.state_lock:
