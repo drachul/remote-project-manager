@@ -103,6 +103,7 @@ UI notes:
 - Holding `Shift` while clicking a project's Update action runs an update check only (no image updates are applied).
 - Service lists show image links for project (`org.opencontainers.image.url`/`rpm.project_url`), source (`org.opencontainers.image.source`/`rpm.source_url`), and docs (`org.opencontainers.image.documentation`/`rpm.documentation_url`).
 - Update icons indicate available image updates (manual checks still available).
+- Service health is displayed when containers report a Docker health status; services without a health check show a warning icon.
 ## Web UI
 
 
