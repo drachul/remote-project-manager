@@ -988,6 +988,28 @@ body {
   align-self: center;
 }
 
+.service-health-icon {
+  font-size: 16px;
+  align-self: center;
+  color: var(--muted);
+}
+
+.service-health-icon.health-healthy {
+  color: var(--teal);
+}
+
+.service-health-icon.health-unhealthy {
+  color: var(--accent-dark);
+}
+
+.service-health-icon.health-starting {
+  color: #fbbf24;
+}
+
+.service-health-icon.health-unknown {
+  color: #fbbf24;
+}
+
 .bulk-actions {
   display: flex;
   flex-wrap: wrap;

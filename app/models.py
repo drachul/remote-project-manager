@@ -231,6 +231,7 @@ class ProjectCreateResponse(BaseModel):
 class ServiceStateEntry(BaseModel):
     id: str
     status: Optional[str] = None
+    health_status: Optional[str] = None
     update_available: bool = False
     update_source_url: Optional[str] = None
     project_url: Optional[str] = None

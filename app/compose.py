@@ -1218,6 +1218,7 @@ def _docker_ps(host: HostConfig, project: str) -> List[dict]:
                 "Service": service or name,
                 "State": state,
                 "Status": status,
+                "Health": None,
             }
         )
     names = [item["Name"] for item in enriched if item.get("Name")]
@@ -1241,6 +1242,12 @@ def _docker_ps(host: HostConfig, project: str) -> List[dict]:
                 status = state.get("Status")
                 if status:
                     item["State"] = status
+                health = None
+                health_state = state.get("Health") if isinstance(state, dict) else None
+                if isinstance(health_state, dict):
+                    health = health_state.get("Status")
+                if health:
+                    item["Health"] = health
                 if "ExitCode" in state:
                     item["ExitCode"] = state.get("ExitCode")
     return enriched
@@ -1350,6 +1357,7 @@ def project_status(host: HostConfig, project: str) -> Tuple[str, List[dict], Lis
                 "state": state,
                 "status": status,
                 "exit_code": exit_code,
+                "health": item.get("Health"),
             }
         )
         is_running = state == "running" or status.lower().startswith("up")

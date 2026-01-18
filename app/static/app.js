@@ -2010,6 +2010,19 @@ function statusIconName(className) {
   return "help";
 }
 
+function healthIconName(status) {
+  if (status === "healthy") {
+    return "heart_check";
+  }
+  if (status === "unhealthy") {
+    return "heart_broken";
+  }
+  if (status === "starting") {
+    return "hourglass_top";
+  }
+  return "pulse_alert";
+}
+
 function escapeHtml(value) {
   return value
     .replace(/&/g, "&amp;")
@@ -5767,6 +5780,14 @@ function renderProjectList() {
         badge.textContent = statusIconName(info.className);
         badge.title = `Status: ${info.label}`;
 
+        const rawHealthStatus = (service.health_status || "").toLowerCase();
+        const healthStatus = rawHealthStatus || "unknown";
+        const healthLabel = rawHealthStatus ? rawHealthStatus : "not reported";
+        const healthIcon = document.createElement("span");
+        healthIcon.className = `material-symbols-outlined service-health-icon health-${healthStatus}`;
+        healthIcon.textContent = healthIconName(healthStatus);
+        healthIcon.title = `Health: ${healthLabel}`;
+
         const updatesIcon = document.createElement("span");
         updatesIcon.className = "material-symbols-outlined updates-icon service-updates-icon";
         const updatesLink = document.createElement("span");
@@ -5789,6 +5810,9 @@ function renderProjectList() {
         const iconsWrap = document.createElement("div");
         iconsWrap.className = "service-icons";
         iconsWrap.appendChild(badge);
+        if (healthIcon) {
+          iconsWrap.appendChild(healthIcon);
+        }
         iconsWrap.appendChild(updatesLink);
         meta.appendChild(iconsWrap);
 

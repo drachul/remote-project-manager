@@ -846,6 +846,7 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
                 "project_id TEXT NOT NULL, "
                 "id TEXT NOT NULL, "
                 "status TEXT, "
+                "health_status TEXT, "
                 "update_available BOOLEAN DEFAULT 0, "
                 "update_registry TEXT, "
                 "update_source_url TEXT, "
@@ -890,6 +891,7 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
             _ensure_column(conn, "service_state", "update_checked_at", "DATETIME")
             _ensure_column(conn, "service_state", "update_source_url", "TEXT")
             _ensure_column(conn, "service_state", "update_registry", "TEXT")
+            _ensure_column(conn, "service_state", "health_status", "TEXT")
             _ensure_column(conn, "service_state", "project_url", "TEXT")
             _ensure_column(conn, "service_state", "source_url", "TEXT")
             _ensure_column(conn, "service_state", "documentation_url", "TEXT")
@@ -1493,6 +1495,26 @@ def _service_statuses_from_containers(containers: List[dict]) -> Dict[str, str]:
     return {service: _derive_service_status(items) for service, items in grouped.items()}
 
 
+def _service_health_from_containers(containers: List[dict]) -> Dict[str, Optional[str]]:
+    grouped: Dict[str, List[str]] = {}
+    for container in containers:
+        service = container.get("service") or container.get("name") or "unknown"
+        health = (container.get("health") or "").strip().lower()
+        if health:
+            grouped.setdefault(service, []).append(health)
+    health_map: Dict[str, Optional[str]] = {}
+    for service, values in grouped.items():
+        if "unhealthy" in values:
+            health_map[service] = "unhealthy"
+        elif "starting" in values:
+            health_map[service] = "starting"
+        elif all(value == "healthy" for value in values):
+            health_map[service] = "healthy"
+        else:
+            health_map[service] = values[0]
+    return health_map
+
+
 def _derive_overall_status(statuses: List[str]) -> str:
     normalized = [status for status in statuses if status]
     if not normalized:
@@ -1728,13 +1750,13 @@ def _load_state_from_db(host_id: Optional[str] = None) -> dict:
         services_by_project: Dict[tuple[str, str], List[dict]] = {}
         if host_id:
             service_rows = conn.execute(
-                "SELECT host_id, project_id, id, status, update_available, update_source_url, project_url, source_url, documentation_url, update_checked_at, refreshed_at "
+                "SELECT host_id, project_id, id, status, health_status, update_available, update_source_url, project_url, source_url, documentation_url, update_checked_at, refreshed_at "
                 "FROM service_state WHERE host_id = ?",
                 (host_id,),
             ).fetchall()
         else:
             service_rows = conn.execute(
-                "SELECT host_id, project_id, id, status, update_available, update_source_url, project_url, source_url, documentation_url, update_checked_at, refreshed_at "
+                "SELECT host_id, project_id, id, status, health_status, update_available, update_source_url, project_url, source_url, documentation_url, update_checked_at, refreshed_at "
                 "FROM service_state"
             ).fetchall()
         for row in service_rows:
@@ -1744,6 +1766,7 @@ def _load_state_from_db(host_id: Optional[str] = None) -> dict:
                 {
                     "id": row["id"],
                     "status": row["status"],
+                    "health_status": row["health_status"],
                     "update_available": bool(row["update_available"]),
                     "update_source_url": row["update_source_url"],
                     "project_url": row["project_url"],
@@ -1887,46 +1910,71 @@ def _persist_state_snapshot(
                 status_ok = project.get("status_ok", False)
                 updates_ok = project.get("updates_ok", False)
                 service_statuses = project.get("service_statuses") if status_ok else {}
+                service_health = project.get("service_health") if status_ok else {}
                 service_updates = project.get("service_updates") if updates_ok else {}
-                service_ids = set(service_statuses) | set(service_updates)
+                service_ids = set(service_statuses) | set(service_updates) | set(service_health)
                 for service_id in service_ids:
                     status = service_statuses.get(service_id) if include_status else None
+                    health_status = (
+                        service_health.get(service_id) if include_status else None
+                    )
                     update_available = None
                     if include_updates and service_id in service_updates:
                         update_available = 1 if service_updates[service_id] else 0
                     service_refreshed = (
                         refreshed_at_str if include_status and status is not None else None
                     )
-                    conn.execute(
-                        "INSERT INTO service_state "
-                        "(host_id, project_id, id, status, update_available, refreshed_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?) "
-                        "ON CONFLICT(host_id, project_id, id) DO UPDATE SET "
-                        "status = COALESCE(excluded.status, service_state.status), "
-                        "update_available = COALESCE(excluded.update_available, service_state.update_available), "
-                        "refreshed_at = COALESCE(excluded.refreshed_at, service_state.refreshed_at)",
-                        (
-                            host_id,
-                            project_id,
-                            service_id,
-                            status,
-                            update_available,
-                            service_refreshed,
-                        ),
-                    )
+                    if include_status:
+                        conn.execute(
+                            "INSERT INTO service_state "
+                            "(host_id, project_id, id, status, health_status, update_available, refreshed_at) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                            "ON CONFLICT(host_id, project_id, id) DO UPDATE SET "
+                            "status = COALESCE(excluded.status, service_state.status), "
+                            "health_status = excluded.health_status, "
+                            "update_available = COALESCE(excluded.update_available, service_state.update_available), "
+                            "refreshed_at = COALESCE(excluded.refreshed_at, service_state.refreshed_at)",
+                            (
+                                host_id,
+                                project_id,
+                                service_id,
+                                status,
+                                health_status,
+                                update_available,
+                                service_refreshed,
+                            ),
+                        )
+                    else:
+                        conn.execute(
+                            "INSERT INTO service_state "
+                            "(host_id, project_id, id, status, update_available, refreshed_at) "
+                            "VALUES (?, ?, ?, ?, ?, ?) "
+                            "ON CONFLICT(host_id, project_id, id) DO UPDATE SET "
+                            "status = COALESCE(excluded.status, service_state.status), "
+                            "update_available = COALESCE(excluded.update_available, service_state.update_available), "
+                            "refreshed_at = COALESCE(excluded.refreshed_at, service_state.refreshed_at)",
+                            (
+                                host_id,
+                                project_id,
+                                service_id,
+                                status,
+                                update_available,
+                                service_refreshed,
+                            ),
+                        )
 
                 if include_status and status_ok:
                     service_list = list(service_statuses.keys())
                     if service_list:
                         placeholders = ",".join(["?"] * len(service_list))
                         conn.execute(
-                            f"UPDATE service_state SET status = ?, refreshed_at = ? "
+                            f"UPDATE service_state SET status = ?, health_status = NULL, refreshed_at = ? "
                             f"WHERE host_id = ? AND project_id = ? AND id NOT IN ({placeholders})",
                             ("down", refreshed_at_str, host_id, project_id, *service_list),
                         )
                     else:
                         conn.execute(
-                            "UPDATE service_state SET status = ?, refreshed_at = ? "
+                            "UPDATE service_state SET status = ?, health_status = NULL, refreshed_at = ? "
                             "WHERE host_id = ? AND project_id = ?",
                             ("down", refreshed_at_str, host_id, project_id),
                         )
@@ -2190,6 +2238,7 @@ def _update_project_status_state(
     host_id: str,
     project_id: str,
     service_statuses: Dict[str, str],
+    service_health: Optional[Dict[str, Optional[str]]],
     refreshed_at: datetime,
     overall_status: Optional[str] = None,
 ) -> None:
@@ -2198,27 +2247,38 @@ def _update_project_status_state(
         return
     _ensure_db(path)
     refreshed_at_str = refreshed_at.isoformat()
+    service_health = service_health or {}
     with _open_db(path) as conn:
         service_ids = list(service_statuses.keys())
         if service_ids:
             for service_id, status in service_statuses.items():
+                health_status = service_health.get(service_id)
                 conn.execute(
-                    "INSERT INTO service_state (host_id, project_id, id, status, refreshed_at) "
-                    "VALUES (?, ?, ?, ?, ?) "
+                    "INSERT INTO service_state "
+                    "(host_id, project_id, id, status, health_status, refreshed_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT(host_id, project_id, id) DO UPDATE SET "
                     "status = excluded.status, "
+                    "health_status = excluded.health_status, "
                     "refreshed_at = excluded.refreshed_at",
-                    (host_id, project_id, service_id, status, refreshed_at_str),
+                    (
+                        host_id,
+                        project_id,
+                        service_id,
+                        status,
+                        health_status,
+                        refreshed_at_str,
+                    ),
                 )
             placeholders = ",".join(["?"] * len(service_ids))
             conn.execute(
-                f"UPDATE service_state SET status = ?, refreshed_at = ? "
+                f"UPDATE service_state SET status = ?, health_status = NULL, refreshed_at = ? "
                 f"WHERE host_id = ? AND project_id = ? AND id NOT IN ({placeholders})",
                 ("down", refreshed_at_str, host_id, project_id, *service_ids),
             )
         else:
             conn.execute(
-                "UPDATE service_state SET status = ?, refreshed_at = ? "
+                "UPDATE service_state SET status = ?, health_status = NULL, refreshed_at = ? "
                 "WHERE host_id = ? AND project_id = ?",
                 ("down", refreshed_at_str, host_id, project_id),
             )
@@ -2538,6 +2598,7 @@ def _build_state_snapshot(
         project_names = [os.path.basename(path.rstrip("/")) for path in project_paths]
         for project_name, project_path in zip(project_names, project_paths):
             service_statuses: Dict[str, str] = {}
+            service_health: Dict[str, Optional[str]] = {}
             service_updates: Dict[str, bool] = {}
             status_ok = False
             updates_ok = False
@@ -2545,6 +2606,7 @@ def _build_state_snapshot(
                 try:
                     _, containers, _ = compose.project_status(host, project_name)
                     service_statuses = _service_statuses_from_containers(containers)
+                    service_health = _service_health_from_containers(containers)
                     status_ok = True
                 except Exception:
                     status_ok = False
@@ -2556,6 +2618,7 @@ def _build_state_snapshot(
                     "project": project_name,
                     "path": project_path,
                     "service_statuses": service_statuses,
+                    "service_health": service_health if status_ok else {},
                     "service_updates": service_updates,
                     "status_ok": status_ok,
                     "updates_ok": updates_ok,
@@ -2645,12 +2708,14 @@ async def _refresh_status_candidate(
             compose.project_status, host, project_name
         )
         service_statuses = _service_statuses_from_containers(containers)
+        service_health = _service_health_from_containers(containers)
         async with app.state.state_lock:
             await asyncio.to_thread(
                 _update_project_status_state,
                 host_id,
                 project_id,
                 service_statuses,
+                service_health,
                 _now(),
                 overall,
             )
@@ -2853,12 +2918,14 @@ async def _refresh_project_state(host_id: str, project: str) -> datetime:
             compose.project_status, host, project
         )
         service_statuses = _service_statuses_from_containers(containers)
+        service_health = _service_health_from_containers(containers)
         async with app.state.state_lock:
             await asyncio.to_thread(
                 _update_project_status_state,
                 host_id,
                 project_id,
                 service_statuses,
+                service_health,
                 _now(),
                 overall,
             )
