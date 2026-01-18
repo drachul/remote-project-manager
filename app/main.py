@@ -888,27 +888,6 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
                 "FOREIGN KEY (host_id) REFERENCES hosts(id) ON DELETE CASCADE"
                 ")"
             )
-            _ensure_column(conn, "service_state", "update_checked_at", "DATETIME")
-            _ensure_column(conn, "service_state", "update_source_url", "TEXT")
-            _ensure_column(conn, "service_state", "update_registry", "TEXT")
-            _ensure_column(conn, "service_state", "health_status", "TEXT")
-            _ensure_column(conn, "service_state", "project_url", "TEXT")
-            _ensure_column(conn, "service_state", "source_url", "TEXT")
-            _ensure_column(conn, "service_state", "documentation_url", "TEXT")
-            _ensure_column(conn, "backup_state", "last_backup_message", "TEXT")
-            _ensure_column(conn, "backup_state", "last_backup_failure", "TEXT")
-            _ensure_column(conn, "backup_state", "cron_override", "TEXT")
-            _ensure_column(conn, "project_state", "sleeping", "BOOLEAN DEFAULT 0")
-            _ensure_column(conn, "backups", "enabled", "BOOLEAN DEFAULT 1")
-            _ensure_column(conn, "users", "role", "TEXT NOT NULL DEFAULT 'normal'")
-            conn.execute(
-                "UPDATE users SET role = ? WHERE role IS NULL OR role = ''",
-                (ROLE_NORMAL,),
-            )
-            conn.execute(
-                "UPDATE users SET role = ? WHERE username = ?",
-                (ROLE_ADMIN, "admin"),
-            )
             admin_exists = conn.execute(
                 "SELECT 1 FROM users WHERE username = ?", ("admin",)
             ).fetchone()
@@ -925,14 +904,6 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
         else:
             logger.debug("DB init failed for path=%s", path)
         raise ConfigError(f"Unable to open db_path {path}: {exc}") from exc
-
-
-def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    existing = {row[1] for row in rows}
-    if column in existing:
-        return
-    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def _normalize_link_value(value: Optional[str]) -> Optional[str]:
