@@ -276,14 +276,6 @@ class IntervalResponse(BaseModel):
     seconds: int
 
 
-class UpdateRefreshRequest(BaseModel):
-    enabled: bool
-
-
-class UpdateRefreshResponse(BaseModel):
-    enabled: bool
-
-
 class BackupSettingsRequest(BaseModel):
     enabled: Optional[bool] = None
     cron_override: Optional[str] = None

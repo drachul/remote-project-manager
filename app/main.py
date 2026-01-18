@@ -74,8 +74,6 @@ from .models import (
     ProjectPortsResponse,
     UpdateApplyResponse,
     UpdateCheckResponse,
-    UpdateRefreshRequest,
-    UpdateRefreshResponse,
     AuthTokenRequest,
     PasswordChangeRequest,
     UserConfigEntry,
@@ -182,19 +180,34 @@ async def load_settings() -> None:
     app.state.update_interval_seconds = _load_interval_setting(
         "update_interval_seconds", _update_interval_seconds()
     )
-    app.state.update_refresh_enabled = _load_update_refresh_enabled()
+    app.state.token_cleanup_interval_seconds = _load_interval_setting(
+        "token_cleanup_interval_seconds", TOKEN_CLEANUP_INTERVAL_SECONDS
+    )
+    app.state.fd_track_interval_seconds = _load_interval_setting(
+        "fd_track_interval_seconds", FD_TRACK_INTERVAL_SECONDS
+    )
     app.state.event_status = _init_event_status()
     now = _now()
     if app.state.state_interval_seconds > 0:
         _set_event_next_run("status_refresh", now + timedelta(seconds=app.state.state_interval_seconds))
-    if app.state.update_interval_seconds > 0 and app.state.update_refresh_enabled:
+    if app.state.update_interval_seconds > 0:
         _set_event_next_run("update_refresh", now + timedelta(seconds=app.state.update_interval_seconds))
     else:
         _set_event_next_run("update_refresh", None)
-    if app.state.db_path:
-        _set_event_next_run("token_cleanup", now + timedelta(seconds=TOKEN_CLEANUP_INTERVAL_SECONDS))
-    if FD_TRACK_INTERVAL_SECONDS > 0:
-        _set_event_next_run("fd_track", now + timedelta(seconds=FD_TRACK_INTERVAL_SECONDS))
+    if app.state.db_path and app.state.token_cleanup_interval_seconds > 0:
+        _set_event_next_run(
+            "token_cleanup",
+            now + timedelta(seconds=app.state.token_cleanup_interval_seconds),
+        )
+    else:
+        _set_event_next_run("token_cleanup", None)
+    if app.state.fd_track_interval_seconds > 0:
+        _set_event_next_run(
+            "fd_track",
+            now + timedelta(seconds=app.state.fd_track_interval_seconds),
+        )
+    else:
+        _set_event_next_run("fd_track", None)
     app.state.state_task = _start_state_task()
     app.state.update_task = _start_update_task()
     app.state.backup_task = _start_backup_task()
@@ -331,7 +344,13 @@ def _required_roles_for_request(path: str, method: str) -> set[str]:
 
     if path.startswith("/config/"):
         return roles_admin
-    if path in ("/state/interval", "/update/interval", "/update/refresh-enabled", "/config/token-expiry"):
+    if path in (
+        "/state/interval",
+        "/update/interval",
+        "/config/token-expiry",
+        "/config/token-cleanup-interval",
+        "/config/fd-track-interval",
+    ):
         return roles_admin
     if path.startswith("/backup/schedule"):
         return roles_admin
@@ -975,38 +994,6 @@ def _load_backup_cron() -> Optional[str]:
     if not enabled:
         return None
     return cron
-
-def _load_update_refresh_enabled() -> bool:
-    path = app.state.db_path
-    if not path:
-        return True
-    _ensure_db(path)
-    value = _read_setting(path, "update_refresh_enabled")
-    if value is None:
-        _write_setting(path, "update_refresh_enabled", "1")
-        return True
-    return value.strip().lower() in ("1", "true", "yes", "on")
-
-
-def _persist_update_refresh_enabled(enabled: bool) -> None:
-    path = app.state.db_path
-    if not path:
-        return
-    _ensure_db(path)
-    _write_setting(path, "update_refresh_enabled", "1" if enabled else "0")
-
-
-async def _set_update_refresh_enabled(enabled: bool) -> None:
-    await _stop_update_task()
-    app.state.update_refresh_enabled = bool(enabled)
-    app.state.update_task = _start_update_task()
-    if app.state.update_interval_seconds > 0 and app.state.update_refresh_enabled:
-        _set_event_next_run("update_refresh", _now() + timedelta(seconds=app.state.update_interval_seconds))
-    else:
-        _set_event_next_run("update_refresh", None)
-    _persist_update_refresh_enabled(app.state.update_refresh_enabled)
-
-
 
 def _load_backup_cron_state() -> tuple[Optional[str], bool]:
     path = app.state.db_path
@@ -2225,7 +2212,7 @@ def _start_state_task() -> Optional[asyncio.Task]:
 
 
 def _start_update_task() -> Optional[asyncio.Task]:
-    if app.state.update_interval_seconds <= 0 or not app.state.update_refresh_enabled:
+    if app.state.update_interval_seconds <= 0:
         return None
     return asyncio.create_task(_update_refresh_loop())
 
@@ -2239,13 +2226,13 @@ def _start_backup_task() -> Optional[asyncio.Task]:
 
 
 def _start_token_cleanup_task() -> Optional[asyncio.Task]:
-    if not app.state.db_path:
+    if not app.state.db_path or app.state.token_cleanup_interval_seconds <= 0:
         return None
     return asyncio.create_task(_token_cleanup_loop())
 
 
 def _start_fd_track_task() -> Optional[asyncio.Task]:
-    if FD_TRACK_INTERVAL_SECONDS <= 0:
+    if app.state.fd_track_interval_seconds <= 0:
         return None
     return asyncio.create_task(_fd_track_loop())
 
@@ -2298,6 +2285,24 @@ async def _stop_backup_task() -> None:
         await task
 
 
+async def _stop_token_cleanup_task() -> None:
+    task = getattr(app.state, "token_cleanup_task", None)
+    if not task:
+        return
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+async def _stop_fd_track_task() -> None:
+    task = getattr(app.state, "fd_task", None)
+    if not task:
+        return
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
 def _purge_expired_tokens() -> None:
     path = app.state.db_path
     if not path:
@@ -2316,6 +2321,9 @@ def _purge_expired_tokens() -> None:
 
 
 async def _token_cleanup_loop() -> None:
+    interval = app.state.token_cleanup_interval_seconds
+    if interval <= 0:
+        return
     while True:
         run_at = _now()
         logger.debug("Event trigger token_cleanup")
@@ -2326,13 +2334,16 @@ async def _token_cleanup_loop() -> None:
             _record_event_result("token_cleanup", False, str(exc), run_at)
             logger.exception("Token cleanup failed")
         _set_event_next_run(
-            "token_cleanup", run_at + timedelta(seconds=TOKEN_CLEANUP_INTERVAL_SECONDS)
+            "token_cleanup", run_at + timedelta(seconds=interval)
         )
-        await asyncio.sleep(TOKEN_CLEANUP_INTERVAL_SECONDS)
+        await asyncio.sleep(interval)
 
 
 async def _fd_track_loop() -> None:
-    interval = max(1, FD_TRACK_INTERVAL_SECONDS)
+    interval = app.state.fd_track_interval_seconds
+    if interval <= 0:
+        return
+    interval = max(1, interval)
     while True:
         run_at = _now()
         logger.debug("Event trigger fd_track")
@@ -2365,11 +2376,43 @@ async def _set_update_interval(seconds: int) -> None:
     await _stop_update_task()
     app.state.update_interval_seconds = max(0, seconds)
     app.state.update_task = _start_update_task()
-    if app.state.update_interval_seconds > 0 and app.state.update_refresh_enabled:
+    if app.state.update_interval_seconds > 0:
         _set_event_next_run("update_refresh", _now() + timedelta(seconds=app.state.update_interval_seconds))
     else:
         _set_event_next_run("update_refresh", None)
     _persist_interval_setting("update_interval_seconds", app.state.update_interval_seconds)
+
+
+async def _set_token_cleanup_interval(seconds: int) -> None:
+    await _stop_token_cleanup_task()
+    app.state.token_cleanup_interval_seconds = max(0, seconds)
+    app.state.token_cleanup_task = _start_token_cleanup_task()
+    if app.state.db_path and app.state.token_cleanup_interval_seconds > 0:
+        _set_event_next_run(
+            "token_cleanup",
+            _now() + timedelta(seconds=app.state.token_cleanup_interval_seconds),
+        )
+    else:
+        _set_event_next_run("token_cleanup", None)
+    _persist_interval_setting(
+        "token_cleanup_interval_seconds", app.state.token_cleanup_interval_seconds
+    )
+
+
+async def _set_fd_track_interval(seconds: int) -> None:
+    await _stop_fd_track_task()
+    app.state.fd_track_interval_seconds = max(0, seconds)
+    app.state.fd_task = _start_fd_track_task()
+    if app.state.fd_track_interval_seconds > 0:
+        _set_event_next_run(
+            "fd_track",
+            _now() + timedelta(seconds=app.state.fd_track_interval_seconds),
+        )
+    else:
+        _set_event_next_run("fd_track", None)
+    _persist_interval_setting(
+        "fd_track_interval_seconds", app.state.fd_track_interval_seconds
+    )
 
 
 def _select_hosts(config: AppConfig, host_ids: Optional[List[str]]) -> dict:
@@ -2786,9 +2829,9 @@ def _build_event_status_entries() -> List[EventStatusEntry]:
             enabled = interval > 0
         elif key == "update_refresh":
             interval = app.state.update_interval_seconds
-            enabled = interval > 0 and compose.UPDATE_CHECKS_ENABLED and app.state.update_refresh_enabled
-            if not app.state.update_refresh_enabled and not last_result:
-                last_result = "Periodic update checks disabled"
+            enabled = interval > 0 and compose.UPDATE_CHECKS_ENABLED
+            if interval <= 0 and not last_result:
+                last_result = "Update checks disabled (interval set to 0)"
             elif not compose.UPDATE_CHECKS_ENABLED and not last_result:
                 last_result = "Update checks disabled"
         elif key == "backup_schedule":
@@ -2815,10 +2858,10 @@ def _build_event_status_entries() -> List[EventStatusEntry]:
                 if next_times:
                     next_run = min(next_times)
         elif key == "token_cleanup":
-            interval = TOKEN_CLEANUP_INTERVAL_SECONDS
+            interval = app.state.token_cleanup_interval_seconds
             enabled = bool(app.state.db_path) and interval > 0
         elif key == "fd_track":
-            interval = FD_TRACK_INTERVAL_SECONDS
+            interval = app.state.fd_track_interval_seconds
             enabled = interval > 0
 
         if enabled and not next_run and interval:
@@ -3517,6 +3560,34 @@ def get_token_expiry() -> IntervalResponse:
 def update_token_expiry(payload: IntervalRequest) -> IntervalResponse:
     seconds = _set_token_expiry(payload.seconds)
     return IntervalResponse(seconds=seconds)
+
+
+@app.get("/config/token-cleanup-interval", response_model=IntervalResponse)
+def get_token_cleanup_interval() -> IntervalResponse:
+    return IntervalResponse(seconds=app.state.token_cleanup_interval_seconds)
+
+
+@app.put("/config/token-cleanup-interval", response_model=IntervalResponse)
+async def update_token_cleanup_interval(
+    payload: IntervalRequest,
+) -> IntervalResponse:
+    if payload.seconds < 0:
+        raise HTTPException(status_code=400, detail="seconds must be >= 0")
+    await _set_token_cleanup_interval(payload.seconds)
+    return IntervalResponse(seconds=app.state.token_cleanup_interval_seconds)
+
+
+@app.get("/config/fd-track-interval", response_model=IntervalResponse)
+def get_fd_track_interval() -> IntervalResponse:
+    return IntervalResponse(seconds=app.state.fd_track_interval_seconds)
+
+
+@app.put("/config/fd-track-interval", response_model=IntervalResponse)
+async def update_fd_track_interval(payload: IntervalRequest) -> IntervalResponse:
+    if payload.seconds < 0:
+        raise HTTPException(status_code=400, detail="seconds must be >= 0")
+    await _set_fd_track_interval(payload.seconds)
+    return IntervalResponse(seconds=app.state.fd_track_interval_seconds)
 
 
 @app.get("/hosts", response_model=List[HostInfo])
@@ -4611,15 +4682,74 @@ def restart_service(host_id: str, project: str, service: str) -> OperationRespon
 
 
 @app.get("/hosts/{host_id}/projects/{project}/updates", response_model=UpdateCheckResponse)
-def check_updates(host_id: str, project: str) -> UpdateCheckResponse:
+async def check_updates(host_id: str, project: str) -> UpdateCheckResponse:
     logger.debug("Action project check updates host_id=%s project=%s", host_id, project)
     host = _host(host_id)
     try:
-        supported, updates_available, details, per_service = compose.check_updates(
-            host, project
+        supported, updates_available, details, per_service = await asyncio.to_thread(
+            compose.check_updates, host, project
         )
     except Exception as exc:
         _handle_errors(exc)
+    if supported and per_service:
+        checked_at = _now()
+        project_id = _project_id(host_id, project)
+        updates_by_service = {}
+        for service_id, status in per_service.items():
+            update_available = None
+            if isinstance(status, str):
+                status_value = status.lower()
+                if status_value == "yes":
+                    update_available = True
+                elif status_value == "no":
+                    update_available = False
+            elif isinstance(status, bool):
+                update_available = status
+            updates_by_service[service_id] = update_available
+        service_images: Dict[str, str] = {}
+        service_sources: Dict[str, str] = {}
+        try:
+            service_images = await asyncio.to_thread(
+                compose.list_service_images, host, project
+            )
+        except Exception:
+            service_images = {}
+        try:
+            service_sources = await asyncio.to_thread(
+                compose.list_service_source_overrides, host, project
+            )
+        except Exception:
+            service_sources = {}
+        source_urls: Dict[str, Optional[str]] = {}
+        for service_id, update_available in updates_by_service.items():
+            source_url = service_sources.get(service_id)
+            if not source_url and update_available:
+                image = service_images.get(service_id)
+                if image:
+                    try:
+                        _, source_url = await asyncio.to_thread(
+                            compose.check_image_update,
+                            host,
+                            image,
+                            service_sources.get(service_id),
+                        )
+                    except Exception:
+                        source_url = None
+            source_urls[service_id] = source_url
+        async with app.state.state_lock:
+            await asyncio.to_thread(
+                _sync_project_services, host_id, project_id, list(updates_by_service.keys())
+            )
+            for service_id, update_available in updates_by_service.items():
+                await asyncio.to_thread(
+                    _update_service_update_state,
+                    host_id,
+                    project_id,
+                    service_id,
+                    update_available,
+                    checked_at,
+                    source_urls.get(service_id),
+                )
     return UpdateCheckResponse(
         host_id=host_id,
         project=project,
@@ -4722,20 +4852,6 @@ async def update_update_interval(
 async def get_backup_schedule_summary() -> BackupScheduleSummaryResponse:
     items = await asyncio.to_thread(_build_backup_schedule_summary)
     return BackupScheduleSummaryResponse(items=items)
-
-@app.get("/update/refresh-enabled", response_model=UpdateRefreshResponse)
-async def get_update_refresh_enabled() -> UpdateRefreshResponse:
-    return UpdateRefreshResponse(enabled=bool(app.state.update_refresh_enabled))
-
-
-@app.put("/update/refresh-enabled", response_model=UpdateRefreshResponse)
-async def update_update_refresh_enabled(
-    payload: UpdateRefreshRequest,
-) -> UpdateRefreshResponse:
-    await _set_update_refresh_enabled(payload.enabled)
-    return UpdateRefreshResponse(enabled=bool(app.state.update_refresh_enabled))
-
-
 
 @app.get("/backup/schedule", response_model=BackupScheduleResponse)
 async def get_backup_schedule() -> BackupScheduleResponse:

@@ -141,13 +141,8 @@ const configTabPanels = document.querySelectorAll(".config-tab-panel");
 const addHostConfigBtn = document.getElementById("addHostConfig");
 const addBackupConfigBtn = document.getElementById("addBackupConfig");
 const addUserConfigBtn = document.getElementById("addUserConfig");
-const intervalStateInput = document.getElementById("intervalStateSeconds");
-const intervalUpdateInput = document.getElementById("intervalUpdateSeconds");
-const updateIntervalGroup = document.getElementById("updateIntervalGroup");
-const updateRefreshToggle = document.getElementById("updateRefreshToggle");
-const updateRefreshEnabledInput = document.getElementById("updateRefreshEnabled");
 const tokenExpiryInput = document.getElementById("tokenExpirySeconds");
-const saveIntervalsBtn = document.getElementById("saveIntervals");
+const saveTokenExpiryBtn = document.getElementById("saveTokenExpiry");
 const configStatus = document.getElementById("configStatus");
 const toastContainer = document.getElementById("toastContainer");
 const scheduleScope = document.getElementById("scheduleScope");
@@ -286,6 +281,10 @@ function updateShiftStartButtons() {
       stopBtn.classList.toggle("hidden", !showStop);
     }
     startBtn.classList.toggle("shift-start", shiftOverride);
+    const updateBtn = row.querySelector('.project-action[data-action="update"]');
+    if (updateBtn) {
+      updateBtn.classList.toggle("shift-update", shiftActive && state.updatesEnabled);
+    }
   });
 }
 
@@ -299,7 +298,6 @@ const state = {
   stateIntervalSeconds: null,
   backupScheduleAvailable: true,
   updatesEnabled: true,
-  updateRefreshEnabled: true,
   backupTargetsAvailable: true,
   authToken: null,
   authUser: "",
@@ -386,6 +384,13 @@ const eventStatusState = {
   autoRefreshId: null,
   autoRefreshEnabled: true,
   loading: false,
+};
+
+const EVENT_INTERVAL_CONFIG = {
+  status_refresh: { label: "Interval (s)", endpoint: "/state/interval" },
+  update_refresh: { label: "Interval (s)", endpoint: "/update/interval" },
+  token_cleanup: { label: "Interval (s)", endpoint: "/config/token-cleanup-interval" },
+  fd_track: { label: "Interval (s)", endpoint: "/config/fd-track-interval" },
 };
 
 const EVENT_STATUS_REFRESH_MS = 30000;
@@ -576,19 +581,39 @@ function updateStateStatus() {
 }
 
 function updateIntervalVisibility() {
-  if (!updateIntervalGroup || !intervalUpdateInput) {
+  return;
+}
+
+async function saveEventInterval(eventId, input, button) {
+  const config = EVENT_INTERVAL_CONFIG[eventId];
+  if (!config) {
     return;
   }
-  const show = Boolean(state.updatesEnabled);
-  updateIntervalGroup.classList.toggle("hidden", !show);
-  if (updateRefreshToggle) {
-    updateRefreshToggle.classList.toggle("hidden", !show);
+  const rawValue = input ? input.value : "";
+  const seconds = Number.parseInt(rawValue, 10);
+  if (Number.isNaN(seconds) || seconds < 0) {
+    setConfigStatus("Interval must be 0 or greater.", "error");
+    return;
   }
-  if (updateRefreshEnabledInput) {
-    updateRefreshEnabledInput.disabled = !show;
+  if (button) {
+    button.disabled = true;
   }
-  const refreshEnabled = show && state.updateRefreshEnabled !== false;
-  intervalUpdateInput.disabled = !refreshEnabled;
+  setConfigStatus("Saving settings...");
+  try {
+    await api.put(config.endpoint, { seconds });
+    if (eventId === "status_refresh") {
+      state.stateIntervalSeconds = seconds;
+      updateStateStatus();
+    }
+    setConfigStatus("Settings saved.", "success");
+    await loadEventStatus();
+  } catch (err) {
+    setConfigStatus(`Failed to save settings: ${err.message}`, "error");
+  } finally {
+    if (button) {
+      button.disabled = false;
+    }
+  }
 }
 
 function updateProjectFilterState() {
@@ -3140,16 +3165,61 @@ function renderEventStatusList() {
     title.className = "event-status-title";
     title.textContent = entry.label || entry.id;
 
+    const side = document.createElement("div");
+    side.className = "event-status-side";
+
     const badge = document.createElement("span");
     badge.className = "event-status-badge";
     badge.textContent = entry.enabled ? "enabled" : "disabled";
 
+    side.appendChild(badge);
+
+    let intervalConfigNode = null;
+    const intervalConfig = EVENT_INTERVAL_CONFIG[entry.id];
+    if (intervalConfig) {
+      const config = document.createElement("div");
+      config.className = "event-interval-config";
+      const label = document.createElement("div");
+      label.className = "event-interval-label";
+      label.textContent = intervalConfig.label;
+      const input = document.createElement("input");
+      input.className = "event-interval-input";
+      input.type = "number";
+      input.min = "0";
+      input.value = entry.interval_seconds ?? 0;
+      const saveBtn = document.createElement("button");
+      saveBtn.className = "btn subtle event-interval-save";
+      saveBtn.textContent = "Save";
+      const updatesDisabled = entry.id === "update_refresh" && !state.updatesEnabled;
+      if (updatesDisabled) {
+        input.disabled = true;
+        saveBtn.disabled = true;
+      }
+      saveBtn.addEventListener("click", () => saveEventInterval(entry.id, input, saveBtn));
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          saveEventInterval(entry.id, input, saveBtn);
+        }
+      });
+      config.appendChild(label);
+      config.appendChild(input);
+      config.appendChild(saveBtn);
+      intervalConfigNode = config;
+    }
+
     head.appendChild(title);
-    head.appendChild(badge);
+    head.appendChild(side);
 
     const desc = document.createElement("div");
     desc.className = "event-status-desc";
     desc.textContent = entry.description || "";
+
+    const descRow = document.createElement("div");
+    descRow.className = "event-status-desc-row";
+    descRow.appendChild(desc);
+    if (intervalConfigNode) {
+      descRow.appendChild(intervalConfigNode);
+    }
 
     const meta = document.createElement("div");
     meta.className = "event-status-meta";
@@ -3159,7 +3229,10 @@ function renderEventStatusList() {
     const nextLabel = document.createElement("span");
     nextLabel.textContent = "Next run: ";
     const nextValue = document.createElement("strong");
-    const nextText = entry.enabled ? formatTimestamp(entry.next_run) : "disabled";
+    let nextText = entry.enabled ? formatTimestamp(entry.next_run) : "disabled";
+    if (!entry.enabled && entry.interval_seconds === 0) {
+      nextText = "never";
+    }
     nextValue.textContent = nextText;
     const nextCountdown = document.createElement("span");
     nextCountdown.className = "event-countdown";
@@ -3199,7 +3272,7 @@ function renderEventStatusList() {
     meta.appendChild(resultItem);
 
     card.appendChild(head);
-    card.appendChild(desc);
+    card.appendChild(descRow);
     card.appendChild(meta);
 
     eventStatusList.appendChild(card);
@@ -4514,68 +4587,40 @@ async function loadConfigEntries() {
 }
 
 async function loadIntervals() {
-  if (!intervalStateInput || !intervalUpdateInput || !tokenExpiryInput) {
+  if (!tokenExpiryInput) {
     return;
   }
   try {
-    const [stateInterval, updateInterval, updateRefresh] = await Promise.all([
+    const [stateInterval, tokenExpiry] = await Promise.all([
       api.get("/state/interval"),
-      api.get("/update/interval"),
-      api.get("/update/refresh-enabled"),
+      api.get("/config/token-expiry"),
     ]);
-    intervalStateInput.value = stateInterval.seconds;
-    intervalUpdateInput.value = updateInterval.seconds;
-    if (updateRefreshEnabledInput) {
-      updateRefreshEnabledInput.checked = Boolean(updateRefresh.enabled);
-    }
-    state.updateRefreshEnabled = Boolean(updateRefresh.enabled);
-    const tokenExpiry = await api.get("/config/token-expiry");
     tokenExpiryInput.value = tokenExpiry.seconds;
     state.stateIntervalSeconds = stateInterval.seconds;
-    updateIntervalVisibility();
+    updateStateStatus();
   } catch (err) {
-    setConfigStatus(`Failed to load intervals: ${err.message}`, "error");
+    setConfigStatus(`Failed to load settings: ${err.message}`, "error");
   }
 }
 
-async function saveIntervals() {
-  if (!intervalStateInput || !intervalUpdateInput || !tokenExpiryInput || !saveIntervalsBtn) {
+async function saveTokenExpiry() {
+  if (!tokenExpiryInput || !saveTokenExpiryBtn) {
     return;
   }
-  const stateSeconds = Number.parseInt(intervalStateInput.value, 10);
   const tokenSeconds = Number.parseInt(tokenExpiryInput.value, 10);
-  if (Number.isNaN(stateSeconds) || stateSeconds < 0) {
-    setConfigStatus("State refresh must be 0 or greater.", "error");
-    return;
-  }
   if (Number.isNaN(tokenSeconds) || tokenSeconds < 30) {
     setConfigStatus("Token expiry must be at least 30 seconds.", "error");
     return;
   }
-  saveIntervalsBtn.disabled = true;
+  saveTokenExpiryBtn.disabled = true;
   setConfigStatus("Saving settings...");
   try {
-    await api.put("/state/interval", { seconds: stateSeconds });
-    if (updateRefreshEnabledInput) {
-      const refreshEnabled = Boolean(updateRefreshEnabledInput.checked);
-      await api.put("/update/refresh-enabled", { enabled: refreshEnabled });
-      state.updateRefreshEnabled = refreshEnabled;
-    }
-    if (state.updatesEnabled) {
-      const updateSeconds = Number.parseInt(intervalUpdateInput.value, 10);
-      if (Number.isNaN(updateSeconds) || updateSeconds < 0) {
-        setConfigStatus("Update check must be 0 or greater.", "error");
-        return;
-      }
-      await api.put("/update/interval", { seconds: updateSeconds });
-    }
     await api.put("/config/token-expiry", { seconds: tokenSeconds });
-    state.stateIntervalSeconds = stateSeconds;
     setConfigStatus("Settings saved.", "success");
   } catch (err) {
     setConfigStatus(`Failed to save settings: ${err.message}`, "error");
   } finally {
-    saveIntervalsBtn.disabled = false;
+    saveTokenExpiryBtn.disabled = false;
   }
 }
 
@@ -5576,6 +5621,7 @@ function renderProjectList() {
         updateBtn.disabled = true;
       }
       setActionRunning(updateBtn, updateRunning);
+      updateBtn.classList.toggle("shift-update", shiftActive && state.updatesEnabled);
       updateBtn.classList.toggle("hidden", !allowProjectActions);
     }
     if (backupBtn) {
@@ -6172,6 +6218,10 @@ async function runProjectAction(button, hostId, projectName, action) {
     action === "start" &&
     row?.dataset.projectRunning === "true" &&
     document.body?.classList.contains("hard-restart-active");
+  const shiftUpdateRequested =
+    action === "update" &&
+    state.updatesEnabled &&
+    document.body?.classList.contains("hard-restart-active");
   const runningAction = button.dataset.runningAction || action;
   const isRunning = button.dataset.actionRunning === "true";
 
@@ -6212,6 +6262,7 @@ async function runProjectAction(button, hostId, projectName, action) {
   }
   let backupRow = null;
   let shouldRefresh = false;
+  let skipProjectRefresh = false;
   let completionMessage = "";
   try {
     if (action === "refresh") {
@@ -6220,6 +6271,14 @@ async function runProjectAction(button, hostId, projectName, action) {
       );
       shouldRefresh = true;
       completionMessage = "Refresh complete";
+    } else if (shiftUpdateRequested) {
+      const result = await api.get(
+        `/hosts/${hostId}/projects/${projectName}/updates`
+      );
+      const updatesAvailable = Boolean(result?.updates_available);
+      completionMessage = updatesAvailable ? "Updates available" : "Updates: none";
+      shouldRefresh = true;
+      skipProjectRefresh = true;
     } else if (action === "backup") {
       const target = `${hostId}/${projectName}`;
       const totalSteps = 3;
@@ -6302,7 +6361,7 @@ async function runProjectAction(button, hostId, projectName, action) {
       setActionLabel(button, originalLabel);
     }
     if (shouldRefresh) {
-      if (action !== "refresh") {
+      if (action !== "refresh" && !skipProjectRefresh) {
         try {
           await api.post(`/hosts/${hostId}/projects/${projectName}/state/refresh`);
         } catch (err) {
@@ -7242,14 +7301,8 @@ if (addUserConfigBtn) {
     userConfigList.prepend(entry);
   });
 }
-if (updateRefreshEnabledInput) {
-  updateRefreshEnabledInput.addEventListener("change", () => {
-    state.updateRefreshEnabled = Boolean(updateRefreshEnabledInput.checked);
-    updateIntervalVisibility();
-  });
-}
-if (saveIntervalsBtn) {
-  saveIntervalsBtn.addEventListener("click", saveIntervals);
+if (saveTokenExpiryBtn) {
+  saveTokenExpiryBtn.addEventListener("click", saveTokenExpiry);
 }
 refreshLogsBtn.addEventListener("click", fetchLogs);
 toggleFollowBtn.addEventListener("click", toggleLogFollow);

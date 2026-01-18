@@ -1841,6 +1841,13 @@ body {
   gap: 12px;
 }
 
+.event-status-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
 .event-status-title {
   font-size: 14px;
   font-weight: 600;
@@ -1856,6 +1863,29 @@ body {
   color: #86efac;
 }
 
+.event-interval-config {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-self: end;
+}
+
+.event-interval-label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.event-interval-input {
+  background: #0a0f16;
+  color: var(--text);
+  border: 1px solid rgba(243, 244, 246, 0.12);
+  border-radius: 10px;
+  padding: 4px 8px;
+  font-size: 11px;
+  width: 80px;
+  text-align: left;
+}
+
 .event-status-card.disabled .event-status-badge {
   background: rgba(148, 163, 184, 0.15);
   color: #94a3b8;
@@ -1864,6 +1894,13 @@ body {
 .event-status-desc {
   font-size: 12px;
   color: var(--muted);
+}
+
+.event-status-desc-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
 }
 
 .event-status-meta {
@@ -2135,6 +2172,10 @@ body {
   gap: 12px;
 }
 
+.config-grid.config-grid-vertical {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .config-grid .span-2 {
   grid-column: 1 / -1;
 }
@@ -2372,6 +2413,15 @@ body.hard-restart-active .project-action.shift-start:not(.in-progress) .action-i
 }
 
 body.hard-restart-active .project-action.shift-start:not(.in-progress) {
+  font-weight: 600;
+}
+
+body.hard-restart-active .project-action.shift-update:not(.in-progress) .action-icon {
+  color: #fbbf24;
+  font-variation-settings: "FILL" 0, "wght" 600, "GRAD" 0, "opsz" 20;
+}
+
+body.hard-restart-active .project-action.shift-update:not(.in-progress) {
   font-weight: 600;
 }
 

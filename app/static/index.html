@@ -944,30 +944,17 @@
               <div class="config-section-head">
                 <div>
                   <div class="config-section-title">Misc</div>
-                  <div class="config-section-sub">Intervals and authentication settings.</div>
+                  <div class="config-section-sub">Authentication settings.</div>
                 </div>
               </div>
-              <div class="config-grid">
-                <label class="control">
-                  State refresh
-                  <input type="number" min="0" id="intervalStateSeconds" />
-                </label>
-                <label class="control" id="updateIntervalGroup">
-                  Update check
-                  <input type="number" min="0" id="intervalUpdateSeconds" />
-                </label>
-                <label class="toggle" id="updateRefreshToggle">
-                  <input type="checkbox" id="updateRefreshEnabled" />
-                  <span>Enable periodic update checks</span>
-                </label>
+              <div class="config-grid config-grid-vertical">
                 <label class="control">
                   Token expiry (seconds)
                   <input type="number" min="30" id="tokenExpirySeconds" />
                 </label>
               </div>
-              <div class="field-hint">Set intervals to 0 to disable automatic refresh.</div>
               <div class="schedule-actions align-right">
-                <button class="btn subtle" id="saveIntervals">Save</button>
+                <button class="btn subtle" id="saveTokenExpiry">Save</button>
               </div>
             </section>
           </div>

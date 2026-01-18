@@ -99,7 +99,12 @@ User roles:
 
 The service refreshes project status and update availability on separate timers. Set `STATE_REFRESH_SECONDS` and `UPDATE_REFRESH_SECONDS` to control cadence (set either to `0` to disable periodic refresh). Update checks are rate-limited to five registry manifest requests per hour and can be toggled with `UPDATE_CHECKS_ENABLED`.
 
+UI notes:
+- The Misc tab includes a toggle to enable/disable periodic update checks (manual checks still work when periodic checks are disabled).
+- Holding `Shift` while clicking a project's Update action runs an update check only (no image updates are applied).
+- Update icons link to an image source URL when available via OCI labels (or compose label overrides such as `rpm.source_url`, `rpm.update_url`, or `rpm.changelog_url`).
 ## Web UI
+
 
 Open `http://localhost:8000/` to access the management dashboard. The UI provides:
 - Host and project management (scan, start/stop/restart, compose editor, logs).
