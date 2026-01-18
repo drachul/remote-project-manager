@@ -849,6 +849,9 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
                 "update_available BOOLEAN DEFAULT 0, "
                 "update_registry TEXT, "
                 "update_source_url TEXT, "
+                "project_url TEXT, "
+                "source_url TEXT, "
+                "documentation_url TEXT, "
                 "update_checked_at DATETIME, "
                 "refreshed_at DATETIME, "
                 "PRIMARY KEY (host_id, project_id, id), "
@@ -887,6 +890,9 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
             _ensure_column(conn, "service_state", "update_checked_at", "DATETIME")
             _ensure_column(conn, "service_state", "update_source_url", "TEXT")
             _ensure_column(conn, "service_state", "update_registry", "TEXT")
+            _ensure_column(conn, "service_state", "project_url", "TEXT")
+            _ensure_column(conn, "service_state", "source_url", "TEXT")
+            _ensure_column(conn, "service_state", "documentation_url", "TEXT")
             _ensure_column(conn, "backup_state", "last_backup_message", "TEXT")
             _ensure_column(conn, "backup_state", "last_backup_failure", "TEXT")
             _ensure_column(conn, "backup_state", "cron_override", "TEXT")
@@ -1661,13 +1667,13 @@ def _load_state_from_db(host_id: Optional[str] = None) -> dict:
         services_by_project: Dict[tuple[str, str], List[dict]] = {}
         if host_id:
             service_rows = conn.execute(
-                "SELECT host_id, project_id, id, status, update_available, update_source_url, update_checked_at, refreshed_at "
+                "SELECT host_id, project_id, id, status, update_available, update_source_url, project_url, source_url, documentation_url, update_checked_at, refreshed_at "
                 "FROM service_state WHERE host_id = ?",
                 (host_id,),
             ).fetchall()
         else:
             service_rows = conn.execute(
-                "SELECT host_id, project_id, id, status, update_available, update_source_url, update_checked_at, refreshed_at "
+                "SELECT host_id, project_id, id, status, update_available, update_source_url, project_url, source_url, documentation_url, update_checked_at, refreshed_at "
                 "FROM service_state"
             ).fetchall()
         for row in service_rows:
@@ -1679,6 +1685,9 @@ def _load_state_from_db(host_id: Optional[str] = None) -> dict:
                     "status": row["status"],
                     "update_available": bool(row["update_available"]),
                     "update_source_url": row["update_source_url"],
+                    "project_url": row["project_url"],
+                    "source_url": row["source_url"],
+                    "documentation_url": row["documentation_url"],
                     "update_checked_at": _parse_timestamp(row["update_checked_at"]),
                     "refreshed_at": _parse_timestamp(row["refreshed_at"]),
                 }
@@ -2030,6 +2039,9 @@ def _update_service_update_state(
     update_available: Optional[bool],
     checked_at: datetime,
     update_source_url: Optional[str],
+    project_url: Optional[str],
+    source_url: Optional[str],
+    documentation_url: Optional[str],
     update_registry: Optional[str],
 ) -> None:
     path = app.state.db_path
@@ -2042,12 +2054,16 @@ def _update_service_update_state(
             update_value = 1 if update_available else 0
         conn.execute(
             "INSERT INTO service_state "
-            "(host_id, project_id, id, update_available, update_checked_at, update_source_url, update_registry) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "(host_id, project_id, id, update_available, update_checked_at, update_source_url, "
+            "project_url, source_url, documentation_url, update_registry) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(host_id, project_id, id) DO UPDATE SET "
             "update_available = COALESCE(excluded.update_available, service_state.update_available), "
             "update_checked_at = COALESCE(excluded.update_checked_at, service_state.update_checked_at), "
             "update_source_url = COALESCE(excluded.update_source_url, service_state.update_source_url), "
+            "project_url = COALESCE(excluded.project_url, service_state.project_url), "
+            "source_url = COALESCE(excluded.source_url, service_state.source_url), "
+            "documentation_url = COALESCE(excluded.documentation_url, service_state.documentation_url), "
             "update_registry = COALESCE(excluded.update_registry, service_state.update_registry)",
             (
                 host_id,
@@ -2056,6 +2072,9 @@ def _update_service_update_state(
                 update_value,
                 checked_at.isoformat(),
                 update_source_url,
+                project_url,
+                source_url,
+                documentation_url,
                 update_registry,
             ),
         )
@@ -2592,11 +2611,11 @@ async def _refresh_update_state(host_ids: Optional[List[str]] = None) -> datetim
         return now
 
     try:
-        service_sources = await asyncio.to_thread(
-            compose.list_service_source_overrides, host, project_name
+        service_links = await asyncio.to_thread(
+            compose.list_service_link_overrides, host, project_name
         )
     except Exception:
-        service_sources = {}
+        service_links = {}
 
     async with app.state.state_lock:
         await asyncio.to_thread(
@@ -2617,9 +2636,15 @@ async def _refresh_update_state(host_ids: Optional[List[str]] = None) -> datetim
     if not allowed:
         logger.info("Update check skipped due to rate limit")
         return now
-    source_override = service_sources.get(service_id)
-    update_available, source_url = await asyncio.to_thread(
-        compose.check_image_update, host, service_images[service_id], source_override
+    link_override = service_links.get(service_id, {})
+    (
+        update_available,
+        update_source_url,
+        project_url,
+        source_url,
+        documentation_url,
+    ) = await asyncio.to_thread(
+        compose.check_image_update, host, service_images[service_id], link_override
     )
     async with app.state.state_lock:
         await asyncio.to_thread(
@@ -2629,7 +2654,10 @@ async def _refresh_update_state(host_ids: Optional[List[str]] = None) -> datetim
             service_id,
             update_available,
             now,
+            update_source_url,
+            project_url,
             source_url,
+            documentation_url,
             registry,
         )
     logger.info(
@@ -4705,7 +4733,7 @@ async def check_updates(host_id: str, project: str) -> UpdateCheckResponse:
                 update_available = status
             updates_by_service[service_id] = update_available
         service_images: Dict[str, str] = {}
-        service_sources: Dict[str, str] = {}
+        service_links: Dict[str, Dict[str, str]] = {}
         try:
             service_images = await asyncio.to_thread(
                 compose.list_service_images, host, project
@@ -4713,29 +4741,51 @@ async def check_updates(host_id: str, project: str) -> UpdateCheckResponse:
         except Exception:
             service_images = {}
         try:
-            service_sources = await asyncio.to_thread(
-                compose.list_service_source_overrides, host, project
+            service_links = await asyncio.to_thread(
+                compose.list_service_link_overrides, host, project
             )
         except Exception:
-            service_sources = {}
-        source_urls: Dict[str, Optional[str]] = {}
+            service_links = {}
+        link_values: Dict[str, Dict[str, Optional[str]]] = {}
         registries: Dict[str, Optional[str]] = {}
         for service_id, update_available in updates_by_service.items():
-            source_url = service_sources.get(service_id)
-            if not source_url and update_available:
-                image = service_images.get(service_id)
-                if image:
-                    try:
-                        _, source_url = await asyncio.to_thread(
-                            compose.check_image_update,
-                            host,
-                            image,
-                            service_sources.get(service_id),
-                        )
-                    except Exception:
-                        source_url = None
-            source_urls[service_id] = source_url
             image = service_images.get(service_id)
+            overrides = service_links.get(service_id, {})
+            update_source_url = (
+                overrides.get("update_url")
+                or overrides.get("source_url")
+                or overrides.get("documentation_url")
+                or overrides.get("project_url")
+            )
+            project_url = overrides.get("project_url")
+            source_url = overrides.get("source_url")
+            documentation_url = overrides.get("documentation_url")
+            check_available = None
+            if image:
+                try:
+                    (
+                        check_available,
+                        update_source_url,
+                        project_url,
+                        source_url,
+                        documentation_url,
+                    ) = await asyncio.to_thread(
+                        compose.check_image_update,
+                        host,
+                        image,
+                        overrides,
+                    )
+                except Exception:
+                    check_available = None
+            if update_available is None and check_available is not None:
+                update_available = check_available
+                updates_by_service[service_id] = update_available
+            link_values[service_id] = {
+                "update_source_url": update_source_url,
+                "project_url": project_url,
+                "source_url": source_url,
+                "documentation_url": documentation_url,
+            }
             registries[service_id] = (
                 compose.parse_image_registry(image) if image else None
             )
@@ -4744,6 +4794,7 @@ async def check_updates(host_id: str, project: str) -> UpdateCheckResponse:
                 _sync_project_services, host_id, project_id, list(updates_by_service.keys())
             )
             for service_id, update_available in updates_by_service.items():
+                link_entry = link_values.get(service_id, {})
                 await asyncio.to_thread(
                     _update_service_update_state,
                     host_id,
@@ -4751,7 +4802,10 @@ async def check_updates(host_id: str, project: str) -> UpdateCheckResponse:
                     service_id,
                     update_available,
                     checked_at,
-                    source_urls.get(service_id),
+                    link_entry.get("update_source_url"),
+                    link_entry.get("project_url"),
+                    link_entry.get("source_url"),
+                    link_entry.get("documentation_url"),
                     registries.get(service_id) or "unknown",
                 )
     return UpdateCheckResponse(

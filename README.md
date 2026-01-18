@@ -101,7 +101,8 @@ The service refreshes project status and update availability on separate timers.
 UI notes:
 - The Misc tab includes a toggle to enable/disable periodic update checks (manual checks still work when periodic checks are disabled).
 - Holding `Shift` while clicking a project's Update action runs an update check only (no image updates are applied).
-- Update icons link to an image source URL when available via OCI labels (or compose label overrides such as `rpm.source_url`, `rpm.update_url`, or `rpm.changelog_url`).
+- Service lists show image links for project (`org.opencontainers.image.url`/`rpm.project_url`), source (`org.opencontainers.image.source`/`rpm.source_url`), and docs (`org.opencontainers.image.documentation`/`rpm.documentation_url`).
+- Update icons indicate available image updates (manual checks still available).
 ## Web UI
 
 

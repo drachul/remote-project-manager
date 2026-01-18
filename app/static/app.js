@@ -4850,7 +4850,6 @@ function buildProjectEntries() {
       const stateProject = stateHost?.projects?.find((item) => item.project === projectName);
       const projectPath = projectPaths[projectName] || stateProject?.path || "";
       const services = stateProject?.services || [];
-      const updateSourceUrl = services.find((service) => service.update_available && service.update_source_url)?.update_source_url || null;
       const backupEnabled =
         (host.backup_enabled ? host.backup_enabled[projectName] : undefined) ??
         stateProject?.backup_enabled ??
@@ -4889,7 +4888,6 @@ function buildProjectEntries() {
         lastBackupFailure,
         services,
         serviceCount: services.length,
-        updateSourceUrl,
       });
     });
   });
@@ -5491,7 +5489,6 @@ function renderProjectList() {
 
     const updatesIcon = row.querySelector(".updates-icon");
     const updatesLink = row.querySelector(".updates-link");
-    const updateUrl = entry.updateSourceUrl || "";
     const showUpdates = state.updatesEnabled && updatesInfo.className === "updates-yes";
     updatesIcon.classList.remove("yes");
     if (!state.updatesEnabled) {
@@ -5501,28 +5498,15 @@ function renderProjectList() {
       if (updatesLink) {
         updatesLink.classList.add("hidden");
         updatesLink.classList.remove("no-link");
-        updatesLink.removeAttribute("href");
-        updatesLink.removeAttribute("target");
-        updatesLink.removeAttribute("rel");
       }
     } else if (showUpdates) {
       updatesIcon.classList.add("yes");
       updatesIcon.textContent = "published_with_changes";
-      updatesIcon.title = updateUrl ? "Updates available (view source)" : "Updates available";
+      updatesIcon.title = "Updates available";
       updatesIcon.classList.remove("hidden");
       if (updatesLink) {
         updatesLink.classList.remove("hidden");
-        if (updateUrl) {
-          updatesLink.href = updateUrl;
-          updatesLink.target = "_blank";
-          updatesLink.rel = "noopener";
-          updatesLink.classList.remove("no-link");
-        } else {
-          updatesLink.removeAttribute("href");
-          updatesLink.removeAttribute("target");
-          updatesLink.removeAttribute("rel");
-          updatesLink.classList.add("no-link");
-        }
+        updatesLink.classList.remove("no-link");
       }
     } else {
       updatesIcon.textContent = "";
@@ -5531,9 +5515,6 @@ function renderProjectList() {
       if (updatesLink) {
         updatesLink.classList.add("hidden");
         updatesLink.classList.remove("no-link");
-        updatesLink.removeAttribute("href");
-        updatesLink.removeAttribute("target");
-        updatesLink.removeAttribute("rel");
       }
     }
 
@@ -5670,16 +5651,43 @@ function renderProjectList() {
         item.className = "service-item";
 
         const details = document.createElement("div");
+        const title = document.createElement("div");
+        title.className = "service-title";
         const name = document.createElement("div");
         name.className = "service-name";
         const serviceName = service.id || "unknown";
         const encodedService = encodeURIComponent(serviceName);
         name.textContent = serviceName;
+        const links = document.createElement("div");
+        links.className = "service-links";
+        const addServiceLink = (url, icon, label) => {
+          if (!url) {
+            return;
+          }
+          const link = document.createElement("a");
+          link.className = "service-link";
+          link.href = url;
+          link.target = "_blank";
+          link.rel = "noopener";
+          link.title = label;
+          link.setAttribute("aria-label", label);
+          const iconSpan = document.createElement("span");
+          iconSpan.className = "material-symbols-outlined service-link-icon";
+          iconSpan.textContent = icon;
+          link.appendChild(iconSpan);
+          links.appendChild(link);
+        };
+        addServiceLink(service.project_url, "folder_code", "Project URL");
+        addServiceLink(service.source_url, "box", "Source");
+        addServiceLink(service.documentation_url, "quick_reference", "Documentation");
+        links.classList.toggle("hidden", !links.childElementCount);
+        title.appendChild(name);
+        title.appendChild(links);
         const meta = document.createElement("div");
         meta.className = "service-meta";
 
 
-        details.appendChild(name);
+        details.appendChild(title);
         details.appendChild(meta);
 
         const badge = document.createElement("span");
@@ -5689,35 +5697,21 @@ function renderProjectList() {
 
         const updatesIcon = document.createElement("span");
         updatesIcon.className = "material-symbols-outlined updates-icon service-updates-icon";
-        const updatesLink = document.createElement("a");
+        const updatesLink = document.createElement("span");
         updatesLink.className = "updates-link service-updates-link";
         updatesLink.appendChild(updatesIcon);
-        const updateUrl = service.update_source_url || "";
         if (state.updatesEnabled && service.update_available) {
           updatesIcon.classList.add("yes");
           updatesIcon.textContent = "published_with_changes";
-          updatesIcon.title = updateUrl ? "Updates available (view source)" : "Updates available";
+          updatesIcon.title = "Updates available";
           updatesLink.classList.remove("hidden");
-          if (updateUrl) {
-            updatesLink.href = updateUrl;
-            updatesLink.target = "_blank";
-            updatesLink.rel = "noopener";
-            updatesLink.classList.remove("no-link");
-          } else {
-            updatesLink.removeAttribute("href");
-            updatesLink.removeAttribute("target");
-            updatesLink.removeAttribute("rel");
-            updatesLink.classList.add("no-link");
-          }
+          updatesLink.classList.remove("no-link");
         } else {
           updatesIcon.classList.add("hidden");
           updatesIcon.textContent = "";
           updatesIcon.title = state.updatesEnabled ? "Updates: none" : "Updates disabled";
           updatesLink.classList.add("hidden");
           updatesLink.classList.remove("no-link");
-          updatesLink.removeAttribute("href");
-          updatesLink.removeAttribute("target");
-          updatesLink.removeAttribute("rel");
         }
 
         const iconsWrap = document.createElement("div");

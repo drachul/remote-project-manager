@@ -36,14 +36,13 @@ COMPOSE_FILENAMES = (
     "docker-compose.yml",
     "docker-compose.yaml",
 )
-USER_SOURCE_LABELS = ("rpm.source_url", "rpm.update_url", "rpm.changelog_url")
-OCI_SOURCE_LABELS = (
-    "org.opencontainers.image.source",
-    "org.opencontainers.image.url",
-    "org.opencontainers.image.documentation",
-    "org.label-schema.vcs-url",
-    "org.label-schema.url",
-)
+USER_PROJECT_LABELS = ("rpm.project_url",)
+USER_SOURCE_LABELS = ("rpm.source_url",)
+USER_DOC_LABELS = ("rpm.documentation_url",)
+USER_UPDATE_LABELS = ("rpm.update_url", "rpm.changelog_url")
+OCI_SOURCE_LABELS = ("org.opencontainers.image.source", "org.label-schema.vcs-url")
+OCI_URL_LABELS = ("org.opencontainers.image.url", "org.label-schema.url")
+OCI_DOC_LABELS = ("org.opencontainers.image.documentation",)
 _SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _REGISTRY_AUTH_PARAM_RE = re.compile(r'(\w+)="([^"]*)"')
 logger = logging.getLogger("rpm")
@@ -1556,8 +1555,8 @@ def _select_label_value(labels: Dict[str, str], keys: Tuple[str, ...]) -> Option
     return None
 
 
-def list_service_source_overrides(host: HostConfig, project: str) -> Dict[str, str]:
-    overrides: Dict[str, str] = {}
+def list_service_link_overrides(host: HostConfig, project: str) -> Dict[str, Dict[str, str]]:
+    overrides: Dict[str, Dict[str, str]] = {}
     try:
         config = _compose_config_json(host, project)
     except ComposeError:
@@ -1580,9 +1579,25 @@ def list_service_source_overrides(host: HostConfig, project: str) -> Dict[str, s
         if not isinstance(service, dict):
             continue
         labels = _normalize_labels(service.get("labels") or service.get("Labels") or {})
-        value = _select_label_value(labels, USER_SOURCE_LABELS)
-        if value:
-            overrides[name] = value
+        entry = {
+            "project_url": _select_label_value(labels, USER_PROJECT_LABELS),
+            "source_url": _select_label_value(labels, USER_SOURCE_LABELS),
+            "documentation_url": _select_label_value(labels, USER_DOC_LABELS),
+            "update_url": _select_label_value(labels, USER_UPDATE_LABELS),
+        }
+        entry = {key: value for key, value in entry.items() if value}
+        if entry:
+            overrides[name] = entry
+    return overrides
+
+
+def list_service_source_overrides(host: HostConfig, project: str) -> Dict[str, str]:
+    overrides: Dict[str, str] = {}
+    link_overrides = list_service_link_overrides(host, project)
+    for name, entry in link_overrides.items():
+        override = entry.get("update_url") or entry.get("source_url")
+        if override:
+            overrides[name] = override
     return overrides
 
 
@@ -1887,21 +1902,47 @@ def _extract_source_url(labels: Dict[str, str]) -> Optional[str]:
     return _select_label_value(labels, OCI_SOURCE_LABELS)
 
 
-def _resolve_image_source_url(
+def _extract_image_links(labels: Dict[str, str]) -> Dict[str, Optional[str]]:
+    return {
+        "project_url": _select_label_value(labels, OCI_URL_LABELS),
+        "source_url": _extract_source_url(labels),
+        "documentation_url": _select_label_value(labels, OCI_DOC_LABELS),
+    }
+
+
+def _resolve_image_links(
     host: HostConfig,
     image: str,
     platform: Dict[str, Optional[str]],
     manifest: object,
-    override: Optional[str],
-) -> Optional[str]:
+    overrides: Optional[Dict[str, str]],
+) -> Dict[str, Optional[str]]:
     _ = host
-    if override:
-        return override
+    links = {"project_url": None, "source_url": None, "documentation_url": None}
+    if overrides:
+        for key in links:
+            value = overrides.get(key)
+            if value:
+                links[key] = value
+    if all(links.values()):
+        return links
     try:
         labels = _remote_config_labels(image, platform, manifest)
     except ComposeError:
-        return None
-    return _extract_source_url(labels)
+        return links
+    remote_links = _extract_image_links(labels)
+    for key, value in remote_links.items():
+        if not links.get(key) and value:
+            links[key] = value
+    return links
+
+
+def _resolve_update_source_url(
+    update_override: Optional[str], links: Dict[str, Optional[str]]
+) -> Optional[str]:
+    if update_override:
+        return update_override
+    return links.get("source_url") or links.get("documentation_url") or links.get("project_url")
 
 
 def _select_manifest_digest(
@@ -2024,27 +2065,63 @@ def check_updates(host: HostConfig, project: str) -> Tuple[bool, bool, str, Dict
 def check_image_update(
     host: HostConfig,
     image: str,
-    source_override: Optional[str] = None,
-) -> Tuple[Optional[bool], Optional[str]]:
+    link_overrides: Optional[Dict[str, str]] = None,
+) -> Tuple[Optional[bool], Optional[str], Optional[str], Optional[str], Optional[str]]:
     local_digests, local_error = _local_repo_digests(host, image)
     local_platform = _local_image_platform(host, image)
-    source_url = source_override
+    overrides = link_overrides or {}
+    update_override = overrides.get("update_url")
     try:
         manifest = _remote_manifest(host, image)
     except ComposeError:
-        return None, source_url
-    source_url = source_url or _resolve_image_source_url(
-        host, image, local_platform, manifest, source_override
-    )
+        links = {
+            "project_url": overrides.get("project_url"),
+            "source_url": overrides.get("source_url"),
+            "documentation_url": overrides.get("documentation_url"),
+        }
+        update_source_url = _resolve_update_source_url(update_override, links)
+        return (
+            None,
+            update_source_url,
+            links.get("project_url"),
+            links.get("source_url"),
+            links.get("documentation_url"),
+        )
+    links = _resolve_image_links(host, image, local_platform, manifest, overrides)
+    update_source_url = _resolve_update_source_url(update_override, links)
     remote_digest = _select_manifest_digest(manifest, local_platform, local_digests)
     if not remote_digest:
-        return None, source_url
+        return (
+            None,
+            update_source_url,
+            links.get("project_url"),
+            links.get("source_url"),
+            links.get("documentation_url"),
+        )
     local_digest_list = _digest_list(local_digests)
     if local_digest_list:
-        return remote_digest not in local_digest_list, source_url
+        return (
+            remote_digest not in local_digest_list,
+            update_source_url,
+            links.get("project_url"),
+            links.get("source_url"),
+            links.get("documentation_url"),
+        )
     if local_error:
-        return True, source_url
-    return True, source_url
+        return (
+            True,
+            update_source_url,
+            links.get("project_url"),
+            links.get("source_url"),
+            links.get("documentation_url"),
+        )
+    return (
+        True,
+        update_source_url,
+        links.get("project_url"),
+        links.get("source_url"),
+        links.get("documentation_url"),
+    )
 
 
 def apply_updates(host: HostConfig, project: str) -> Tuple[bool, str]:

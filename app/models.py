@@ -233,6 +233,9 @@ class ServiceStateEntry(BaseModel):
     status: Optional[str] = None
     update_available: bool = False
     update_source_url: Optional[str] = None
+    project_url: Optional[str] = None
+    source_url: Optional[str] = None
+    documentation_url: Optional[str] = None
     refreshed_at: Optional[datetime] = None
     update_checked_at: Optional[datetime] = None
 

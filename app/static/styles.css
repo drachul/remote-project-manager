@@ -888,6 +888,39 @@ body {
   font-weight: 600;
 }
 
+.service-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.service-links {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.service-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  text-decoration: none;
+  padding: 2px;
+  border-radius: 6px;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.service-link:hover {
+  color: var(--text);
+  background: rgba(243, 244, 246, 0.12);
+}
+
+.service-link-icon {
+  font-size: 16px;
+}
+
 .service-meta {
   display: flex;
   align-items: center;
