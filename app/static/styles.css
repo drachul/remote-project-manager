@@ -995,19 +995,19 @@ body {
 }
 
 .service-health-icon.health-healthy {
-  color: var(--teal);
+  color: #22c55e;
 }
 
 .service-health-icon.health-unhealthy {
-  color: var(--accent-dark);
+  color: #ef4444;
 }
 
 .service-health-icon.health-starting {
-  color: #fbbf24;
+  color: #f59e0b;
 }
 
 .service-health-icon.health-unknown {
-  color: #fbbf24;
+  color: #f59e0b;
 }
 
 .bulk-actions {
