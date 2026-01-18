@@ -124,7 +124,7 @@ ROLE_ADMIN = "admin"
 ROLE_POWER = "power"
 ROLE_NORMAL = "normal"
 VALID_ROLES = {ROLE_ADMIN, ROLE_POWER, ROLE_NORMAL}
-FD_TRACK_INTERVAL_SECONDS = int(os.getenv("APP_FD_TRACK_INTERVAL", "300"))
+FD_TRACK_INTERVAL_SECONDS = 300
 FD_TRACK_TOP = int(os.getenv("APP_FD_TRACK_TOP", "0"))
 
 
@@ -2564,8 +2564,6 @@ async def _refresh_status_candidate(
 
 async def _refresh_update_state(host_ids: Optional[List[str]] = None) -> datetime:
     now = _now()
-    if not compose.UPDATE_CHECKS_ENABLED:
-        return now
     async with app.state.state_lock:
         candidate = await asyncio.to_thread(_select_update_candidate, host_ids)
     if not candidate:
@@ -2829,11 +2827,9 @@ def _build_event_status_entries() -> List[EventStatusEntry]:
             enabled = interval > 0
         elif key == "update_refresh":
             interval = app.state.update_interval_seconds
-            enabled = interval > 0 and compose.UPDATE_CHECKS_ENABLED
+            enabled = interval > 0
             if interval <= 0 and not last_result:
                 last_result = "Update checks disabled (interval set to 0)"
-            elif not compose.UPDATE_CHECKS_ENABLED and not last_result:
-                last_result = "Update checks disabled"
         elif key == "backup_schedule":
             interval = None
             try:
@@ -3041,13 +3037,6 @@ async def _update_refresh_loop() -> None:
     while True:
         run_at = _now()
         logger.debug("Event trigger update_refresh")
-        if not compose.UPDATE_CHECKS_ENABLED:
-            _record_event_result(
-                "update_refresh", None, "Update checks disabled", run_at
-            )
-            _set_event_next_run("update_refresh", run_at + timedelta(seconds=interval))
-            await asyncio.sleep(interval)
-            continue
         try:
             await _refresh_update_state()
             _record_event_result(
@@ -4784,7 +4773,6 @@ async def get_state() -> StateResponse:
     hosts = [HostStateResponse(**item) for item in data["hosts"]]
     return StateResponse(
         refreshed_at=data["refreshed_at"],
-        updates_enabled=compose.UPDATE_CHECKS_ENABLED,
         hosts=hosts,
     )
 

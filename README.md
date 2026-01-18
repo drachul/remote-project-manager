@@ -15,7 +15,6 @@ export APP_LOG_LEVEL=INFO
 Optional settings:
 - `STATE_REFRESH_SECONDS` (default: `300`) controls project status refresh cadence.
 - `UPDATE_REFRESH_SECONDS` (default: `720`) controls update status refresh cadence.
-- `UPDATE_CHECKS_ENABLED` (default: `true`) enables or disables registry update checks.
 - `SSL_CERTFILE` and `SSL_KEYFILE` enable HTTPS (see HTTPS section).
 
 Notes:
@@ -97,7 +96,7 @@ User roles:
 
 ## State refresh & updates
 
-The service refreshes project status and update availability on separate timers. Set `STATE_REFRESH_SECONDS` and `UPDATE_REFRESH_SECONDS` to control cadence (set either to `0` to disable periodic refresh). Update checks are rate-limited to five registry manifest requests per hour and can be toggled with `UPDATE_CHECKS_ENABLED`.
+The service refreshes project status and update availability on separate timers. Set `STATE_REFRESH_SECONDS` and `UPDATE_REFRESH_SECONDS` to control cadence (set either to `0` to disable periodic refresh). Update checks are rate-limited to five registry manifest requests per hour.
 
 UI notes:
 - The Misc tab includes a toggle to enable/disable periodic update checks (manual checks still work when periodic checks are disabled).

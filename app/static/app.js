@@ -6793,8 +6793,6 @@ async function runHostQuickAction(button, hostId, action, handler) {
 async function loadState() {
   try {
     state.stateSnapshot = await api.get("/state");
-    state.updatesEnabled = state.stateSnapshot?.updates_enabled !== false;
-    updateIntervalVisibility();
     updateStateStatus();
   } catch (err) {
     if (stateStatus) {

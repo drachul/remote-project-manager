@@ -260,7 +260,6 @@ class HostStateResponse(BaseModel):
 
 class StateResponse(BaseModel):
     refreshed_at: Optional[datetime] = None
-    updates_enabled: bool = True
     hosts: List[HostStateResponse] = Field(default_factory=list)
 
 

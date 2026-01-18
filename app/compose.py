@@ -36,12 +36,6 @@ COMPOSE_FILENAMES = (
     "docker-compose.yml",
     "docker-compose.yaml",
 )
-UPDATE_CHECKS_ENABLED = os.getenv("UPDATE_CHECKS_ENABLED", "true").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
 USER_SOURCE_LABELS = ("rpm.source_url", "rpm.update_url", "rpm.changelog_url")
 OCI_SOURCE_LABELS = (
     "org.opencontainers.image.source",
@@ -1961,8 +1955,6 @@ def _digest_list(repo_digests: List[str]) -> List[str]:
     return digests
 
 def check_updates(host: HostConfig, project: str) -> Tuple[bool, bool, str, Dict[str, str]]:
-    if not UPDATE_CHECKS_ENABLED:
-        return False, False, "Update checks are disabled.", {}
     service_images = list_service_images(host, project)
     images = list_project_images(host, project)
     if not images:
@@ -2026,8 +2018,6 @@ def check_image_update(
     image: str,
     source_override: Optional[str] = None,
 ) -> Tuple[Optional[bool], Optional[str]]:
-    if not UPDATE_CHECKS_ENABLED:
-        return None, None
     local_digests, local_error = _local_repo_digests(host, image)
     local_platform = _local_image_platform(host, image)
     source_url = source_override
