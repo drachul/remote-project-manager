@@ -1697,6 +1697,14 @@ def _parse_image_reference(image: str) -> Tuple[str, str, str, bool]:
         raise ComposeError("Invalid image reference")
     return registry, repository, reference, is_digest
 
+
+def parse_image_registry(image: str) -> Optional[str]:
+    try:
+        registry, _, _, _ = _parse_image_reference(image)
+    except ComposeError:
+        return None
+    return registry
+
 def _parse_www_authenticate(value: Optional[str]) -> Dict[str, str]:
     if not value:
         return {}

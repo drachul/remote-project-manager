@@ -847,6 +847,7 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
                 "id TEXT NOT NULL, "
                 "status TEXT, "
                 "update_available BOOLEAN DEFAULT 0, "
+                "update_registry TEXT, "
                 "update_source_url TEXT, "
                 "update_checked_at DATETIME, "
                 "refreshed_at DATETIME, "
@@ -885,6 +886,7 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
             )
             _ensure_column(conn, "service_state", "update_checked_at", "DATETIME")
             _ensure_column(conn, "service_state", "update_source_url", "TEXT")
+            _ensure_column(conn, "service_state", "update_registry", "TEXT")
             _ensure_column(conn, "backup_state", "last_backup_message", "TEXT")
             _ensure_column(conn, "backup_state", "last_backup_failure", "TEXT")
             _ensure_column(conn, "backup_state", "cron_override", "TEXT")
@@ -2028,6 +2030,7 @@ def _update_service_update_state(
     update_available: Optional[bool],
     checked_at: datetime,
     update_source_url: Optional[str],
+    update_registry: Optional[str],
 ) -> None:
     path = app.state.db_path
     if not path:
@@ -2039,12 +2042,13 @@ def _update_service_update_state(
             update_value = 1 if update_available else 0
         conn.execute(
             "INSERT INTO service_state "
-            "(host_id, project_id, id, update_available, update_checked_at, update_source_url) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
+            "(host_id, project_id, id, update_available, update_checked_at, update_source_url, update_registry) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(host_id, project_id, id) DO UPDATE SET "
             "update_available = COALESCE(excluded.update_available, service_state.update_available), "
             "update_checked_at = COALESCE(excluded.update_checked_at, service_state.update_checked_at), "
-            "update_source_url = COALESCE(excluded.update_source_url, service_state.update_source_url)",
+            "update_source_url = COALESCE(excluded.update_source_url, service_state.update_source_url), "
+            "update_registry = COALESCE(excluded.update_registry, service_state.update_registry)",
             (
                 host_id,
                 project_id,
@@ -2052,6 +2056,7 @@ def _update_service_update_state(
                 update_value,
                 checked_at.isoformat(),
                 update_source_url,
+                update_registry,
             ),
         )
 
@@ -2182,12 +2187,14 @@ def _touch_project_status_refreshed(
         )
 
 
-def _update_slot_available(window_seconds: int = 3600, max_requests: int = 5) -> bool:
-    count, _ = _read_update_window(window_seconds)
+def _update_slot_available(
+    registry: str, window_seconds: int = 3600, max_requests: int = 5
+) -> bool:
+    count, _ = _read_update_window(registry, window_seconds)
     return count < max_requests
 
 
-def _read_update_window(window_seconds: int) -> tuple[int, Optional[str]]:
+def _read_update_window(registry: str, window_seconds: int) -> tuple[int, Optional[str]]:
     path = app.state.db_path
     if not path:
         return 0, None
@@ -2197,8 +2204,8 @@ def _read_update_window(window_seconds: int) -> tuple[int, Optional[str]]:
         row = conn.execute(
             "SELECT COUNT(update_checked_at), MIN(update_checked_at) "
             "FROM service_state "
-            "WHERE update_checked_at IS NOT NULL AND update_checked_at >= ?",
-            (threshold,),
+            "WHERE update_checked_at IS NOT NULL AND update_checked_at >= ? AND update_registry = ?",
+            (threshold, registry),
         ).fetchone()
     if not row:
         return 0, None
@@ -2604,8 +2611,9 @@ async def _refresh_update_state(host_ids: Optional[List[str]] = None) -> datetim
     if not service_id or service_id not in service_images:
         return now
 
+    registry = compose.parse_image_registry(service_images[service_id]) or "unknown"
     async with app.state.state_lock:
-        allowed = await asyncio.to_thread(_update_slot_available)
+        allowed = await asyncio.to_thread(_update_slot_available, registry)
     if not allowed:
         logger.info("Update check skipped due to rate limit")
         return now
@@ -2622,6 +2630,7 @@ async def _refresh_update_state(host_ids: Optional[List[str]] = None) -> datetim
             update_available,
             now,
             source_url,
+            registry,
         )
     logger.info(
         "Update check complete host=%s project=%s service=%s update=%s",
@@ -4710,6 +4719,7 @@ async def check_updates(host_id: str, project: str) -> UpdateCheckResponse:
         except Exception:
             service_sources = {}
         source_urls: Dict[str, Optional[str]] = {}
+        registries: Dict[str, Optional[str]] = {}
         for service_id, update_available in updates_by_service.items():
             source_url = service_sources.get(service_id)
             if not source_url and update_available:
@@ -4725,6 +4735,10 @@ async def check_updates(host_id: str, project: str) -> UpdateCheckResponse:
                     except Exception:
                         source_url = None
             source_urls[service_id] = source_url
+            image = service_images.get(service_id)
+            registries[service_id] = (
+                compose.parse_image_registry(image) if image else None
+            )
         async with app.state.state_lock:
             await asyncio.to_thread(
                 _sync_project_services, host_id, project_id, list(updates_by_service.keys())
@@ -4738,6 +4752,7 @@ async def check_updates(host_id: str, project: str) -> UpdateCheckResponse:
                     update_available,
                     checked_at,
                     source_urls.get(service_id),
+                    registries.get(service_id) or "unknown",
                 )
     return UpdateCheckResponse(
         host_id=host_id,
