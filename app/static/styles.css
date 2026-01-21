@@ -2500,6 +2500,14 @@ body.compact-mode .bulk-actions-label {
   gap: 12px;
 }
 
+.token-entry .config-entry-actions {
+  margin-left: auto;
+}
+
+.token-entry .config-entry-head {
+  align-items: center;
+}
+
 .config-entry-title {
   font-size: 14px;
   font-weight: 600;

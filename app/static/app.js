@@ -362,6 +362,7 @@ const state = {
   updatesEnabled: true,
   backupTargetsAvailable: true,
   authToken: null,
+  compactToken: null,
   authUser: "",
   userRole: "normal",
   initialized: false,
@@ -464,6 +465,7 @@ const deleteProjectState = {
 
 const DEFAULT_CREATE_COMPOSE = `services:\n  app:\n    image: nginx:latest\n    ports:\n      - \"8080:80\"\n`;
 const AUTH_COOKIE_NAME = "rpm_token";
+const COMPACT_TOKEN_STORAGE_KEY = "rpm_compact_token";
 
 
 function normalizeErrorDetail(detail) {
@@ -525,8 +527,13 @@ function parseErrorMessage(text, fallback) {
 async function handleUnauthorized(response) {
   const text = await response.text();
   const message = parseErrorMessage(text, "Unauthorized.");
-  clearAuthToken();
-  showAuthModal(message);
+  const storedCompactToken = state.compactToken || getStoredCompactToken();
+  if (storedCompactToken && document.body?.classList.contains("compact-mode")) {
+    clearAuthToken({ keepCompact: true });
+  } else {
+    clearAuthToken();
+    showAuthModal(message);
+  }
   throw new Error(message);
 }
 
@@ -860,6 +867,26 @@ function getCookieValue(name) {
   return match ? decodeURIComponent(match[1]) : "";
 }
 
+function getStoredCompactToken() {
+  try {
+    return sessionStorage.getItem(COMPACT_TOKEN_STORAGE_KEY) || "";
+  } catch (err) {
+    return "";
+  }
+}
+
+function storeCompactToken(token) {
+  try {
+    if (token) {
+      sessionStorage.setItem(COMPACT_TOKEN_STORAGE_KEY, token);
+    } else {
+      sessionStorage.removeItem(COMPACT_TOKEN_STORAGE_KEY);
+    }
+  } catch (err) {
+    // Ignore storage errors (private mode, storage blocked, etc.).
+  }
+}
+
 function setCookieValue(name, value, expiresAt) {
   let cookie = `${name}=${encodeURIComponent(value)}; path=/`;
   if (expiresAt instanceof Date && !Number.isNaN(expiresAt.getTime())) {
@@ -966,7 +993,7 @@ function isPowerRole() {
 }
 
 function isAuthenticated() {
-  return Boolean(state.authToken);
+  return Boolean(state.authToken || state.compactToken);
 }
 
 function canAccessTokenConfig() {
@@ -1147,10 +1174,20 @@ function scheduleAuthExpiry(payload) {
 
 function handleAuthExpired() {
   if (state.authExpiredNotified) {
-    clearAuthToken();
+    const storedCompactToken = state.compactToken || getStoredCompactToken();
+    if (storedCompactToken && document.body?.classList.contains("compact-mode")) {
+      clearAuthToken({ keepCompact: true });
+    } else {
+      clearAuthToken();
+    }
     return;
   }
   state.authExpiredNotified = true;
+  const storedCompactToken = state.compactToken || getStoredCompactToken();
+  if (storedCompactToken && document.body?.classList.contains("compact-mode")) {
+    clearAuthToken({ keepCompact: true });
+    return;
+  }
   clearAuthToken();
   showAuthModal("Session expired. Please sign in.");
 }
@@ -1172,11 +1209,19 @@ function setAuthToken(token) {
   updateRolePermissions();
 }
 
-function clearAuthToken() {
+function clearAuthToken(options = {}) {
+  const keepCompact = options.keepCompact === true;
+  const storedCompactToken = keepCompact ? (state.compactToken || getStoredCompactToken()) : "";
   closeUserMenu();
   state.authToken = null;
-  state.authUser = "";
-  state.userRole = ROLE_NORMAL;
+  if (!keepCompact) {
+    state.compactToken = null;
+    storeCompactToken("");
+    state.authUser = "";
+    state.userRole = ROLE_NORMAL;
+  } else if (storedCompactToken) {
+    state.compactToken = storedCompactToken;
+  }
   clearAuthExpiryTimeout();
   clearCookieValue(AUTH_COOKIE_NAME);
   updateAuthDisplay();
@@ -1201,6 +1246,52 @@ function loadAuthFromCookie() {
   updateAuthDisplay();
   updateRolePermissions();
   return true;
+}
+
+function applyCompactTokenFromQuery() {
+  const params = new URLSearchParams(window.location.search);
+  const compactParam = params.get("compact") || params.get("view") || params.get("mode");
+  const compactValue = (compactParam || "").toLowerCase();
+  const isCompact = ["1", "true", "yes", "compact"].includes(compactValue);
+  if (!isCompact) {
+    return false;
+  }
+  const rawToken = (params.get("token") || "").trim();
+  if (!rawToken) {
+    const storedToken = getStoredCompactToken();
+    if (!storedToken) {
+      return false;
+    }
+    const payload = decodeToken(storedToken);
+    if (!payload || tokenExpired(payload)) {
+      storeCompactToken("");
+      return false;
+    }
+    state.compactToken = storedToken;
+    state.authUser = payload.username || "";
+    state.userRole = resolveRoleFromPayload(payload);
+    state.authExpiredNotified = false;
+    updateAuthDisplay();
+    updateRolePermissions();
+    return true;
+  }
+  let tokenValue = rawToken;
+  if (tokenValue.toLowerCase().startsWith("bearer ")) {
+    tokenValue = tokenValue.slice("bearer ".length).trim();
+  }
+  tokenValue = tokenValue.replace(/ /g, "+").replace(/-/g, "+").replace(/_/g, "/");
+  setAuthToken(tokenValue);
+  const tokenOk = Boolean(state.authToken);
+  if (tokenOk) {
+    state.compactToken = tokenValue;
+    storeCompactToken(tokenValue);
+  }
+  params.delete("token");
+  const query = params.toString();
+  const hash = window.location.hash || "";
+  const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${hash}`;
+  window.history.replaceState({}, "", nextUrl);
+  return tokenOk;
 }
 
 function showAuthModal(message) {
@@ -1232,8 +1323,31 @@ function hideAuthModal() {
 }
 
 function getAuthHeader() {
-  const payload = decodeToken(state.authToken || "");
+  if (!state.compactToken && document.body?.classList.contains("compact-mode")) {
+    const storedCompactToken = getStoredCompactToken();
+    if (storedCompactToken) {
+      state.compactToken = storedCompactToken;
+      const payload = decodeToken(storedCompactToken);
+      if (payload && !tokenExpired(payload)) {
+        state.authUser = payload.username || "";
+        state.userRole = resolveRoleFromPayload(payload);
+        updateAuthDisplay();
+        updateRolePermissions();
+      }
+    }
+  }
+  if (state.compactToken) {
+    return `Bearer ${state.compactToken}`;
+  }
+  const token = state.authToken || "";
+  if (!token) {
+    return "";
+  }
+  const payload = decodeToken(token);
   if (!payload || tokenExpired(payload)) {
+    if (state.compactToken) {
+      return `Bearer ${state.compactToken}`;
+    }
     handleAuthExpired();
     return "";
   }
@@ -1241,7 +1355,7 @@ function getAuthHeader() {
     state.authUser = payload.username || "";
     updateAuthDisplay();
   }
-  return `Bearer ${state.authToken}`;
+  return `Bearer ${token}`;
 }
 
 function getTimezoneOffsetMinutes() {
@@ -4545,26 +4659,16 @@ function buildUserConfigEntry(user, isNew) {
 
 function buildTokenConfigEntry(token) {
   const entry = tokenConfigTemplate.content.firstElementChild.cloneNode(true);
-  const nameInput = entry.querySelector(".token-name");
-  const idInput = entry.querySelector(".token-id");
   const title = entry.querySelector(".token-title");
-  nameInput.value = token?.name || "";
-  idInput.value = token?.id || "";
+  const nameValue = (token?.name || "").trim();
   entry.dataset.tokenId = token?.id || "";
-  const updateTitle = () => {
-    if (!title) {
-      return;
-    }
-    const value = nameInput.value.trim();
-    title.textContent = value || "Token";
-  };
-  updateTitle();
-  nameInput.addEventListener("input", updateTitle);
-  const saveBtn = entry.querySelector(".config-save");
+  entry.dataset.tokenName = nameValue;
+  if (title) {
+    title.textContent = nameValue || "Token";
+  }
   const deleteBtn = entry.querySelector(".config-delete");
-  saveBtn.addEventListener("click", () => saveTokenConfig(entry));
   deleteBtn.addEventListener("click", () => {
-    const name = nameInput.value.trim() || entry.dataset.tokenId;
+    const name = entry.dataset.tokenName || entry.dataset.tokenId;
     if (!confirmDeleteResource("token", name)) {
       return;
     }
@@ -4608,7 +4712,7 @@ function readUserConfig(entry) {
 function readTokenConfig(entry) {
   return {
     id: entry.dataset.tokenId || "",
-    name: entry.querySelector(".token-name").value.trim(),
+    name: (entry.dataset.tokenName || entry.querySelector(".token-title")?.textContent || "").trim(),
   };
 }
 
@@ -4805,8 +4909,11 @@ async function saveTokenConfig(entry) {
       { name: payload.name }
     );
     entry.dataset.tokenId = data.id;
-    entry.querySelector(".token-name").value = data.name || "";
-    entry.querySelector(".token-id").value = data.id;
+    entry.dataset.tokenName = data.name || "";
+    const title = entry.querySelector(".token-title");
+    if (title) {
+      title.textContent = entry.dataset.tokenName || "Token";
+    }
     setConfigStatus(`Token ${data.name} saved.`, "success");
   } catch (err) {
     setConfigStatus(`Token save failed: ${err.message}`, "error");
@@ -7334,7 +7441,10 @@ async function initApp(forceReload = false) {
 }
 
 async function init() {
-  const hasToken = loadAuthFromCookie();
+  const queryTokenUsed = applyCompactTokenFromQuery();
+  const hasToken = queryTokenUsed
+    ? Boolean(state.authToken || state.compactToken)
+    : loadAuthFromCookie();
   if (!hasToken) {
     showAuthModal("Please sign in to continue.");
     return;
