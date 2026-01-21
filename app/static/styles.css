@@ -70,6 +70,69 @@ body {
   animation: fadeUp 0.6s ease-out both;
 }
 
+body.compact-mode .page {
+  padding: 16px 16px 32px;
+  max-width: 1100px;
+}
+
+body.compact-mode {
+  background: var(--bg);
+  --shadow: none;
+}
+
+body.compact-mode .page::before,
+body.compact-mode .page::after {
+  display: none;
+}
+
+body.compact-mode .top {
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+body.compact-mode .brand {
+  display: none;
+}
+
+body.compact-mode #currentUserBadge {
+  display: none;
+}
+
+body.compact-mode .brand-mark {
+  width: 72px;
+  height: 56px;
+  border-radius: 12px;
+}
+
+body.compact-mode .brand h1 {
+  font-size: 22px;
+  margin-bottom: 2px;
+}
+
+body.compact-mode .brand p {
+  display: none;
+}
+
+body.compact-mode .controls {
+  gap: 6px;
+}
+
+.compact-only {
+  display: none;
+}
+
+body.compact-mode .compact-only {
+  display: block;
+}
+
+body.compact-mode table.compact-only {
+  display: table;
+}
+
+body.compact-mode .full-only {
+  display: none;
+}
+
 .brand {
   display: flex;
   gap: 16px;
@@ -241,6 +304,11 @@ body {
   gap: 20px;
 }
 
+body.compact-mode .panel-grid {
+  gap: 12px;
+  grid-template-columns: 1fr;
+}
+
 .panel {
   background: var(--card);
   border-radius: var(--radius);
@@ -251,6 +319,16 @@ body {
   flex-direction: column;
   gap: 16px;
   min-height: 420px;
+}
+
+body.compact-mode .panel {
+  padding: 6px 8px;
+  gap: 12px;
+  min-height: 320px;
+}
+
+body.compact-mode .host-panel {
+  min-height: 0;
 }
 
 .panel-head {
@@ -265,9 +343,17 @@ body {
   font-size: 20px;
 }
 
+body.compact-mode .panel-head h2 {
+  font-size: 16px;
+}
+
 .panel-sub {
   color: var(--muted);
   font-size: 12px;
+}
+
+body.compact-mode .panel-sub {
+  display: none;
 }
 
 .panel-actions {
@@ -290,6 +376,16 @@ body {
   justify-content: flex-start;
 }
 
+body.compact-mode .project-toolbar {
+  display: none;
+}
+
+.compact-mode .host-table th,
+.compact-mode .project-table th {
+  padding: 2px 8px 6px;
+  font-size: 10px;
+}
+
 .project-search {
   flex: 1;
   min-width: 200px;
@@ -310,6 +406,18 @@ body {
   display: none;
 }
 
+body.compact-mode #openConfig,
+body.compact-mode #openBackupSchedule,
+body.compact-mode #openRestoreModal,
+body.compact-mode #openCreateProject,
+body.compact-mode #bulkActionsWrap,
+body.compact-mode #bulkProgress,
+body.compact-mode #clearProjectFilters,
+body.compact-mode .filter-toggle,
+body.compact-mode .filter-menu {
+  display: none;
+}
+
 
 
 .host-info {
@@ -325,6 +433,78 @@ body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.host-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0 2px;
+}
+
+.host-table th {
+  text-align: left;
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 4px 10px 8px;
+}
+
+.host-table th + th {
+  border-left: 1px solid rgba(243, 244, 246, 0.08);
+}
+
+.host-table th.col-actions {
+  width: 1px;
+  white-space: nowrap;
+  text-align: center;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+.host-table .list-row td {
+  background: #101721;
+  border: 1px solid rgba(243, 244, 246, 0.08);
+  padding: 10px;
+}
+
+body.compact-mode .host-table .list-row td {
+  padding: 8px;
+}
+
+.host-table .list-row td:first-child {
+  border-top-left-radius: 14px;
+  border-bottom-left-radius: 14px;
+}
+
+.host-table .list-row td:last-child {
+  border-top-right-radius: 14px;
+  border-bottom-right-radius: 14px;
+}
+
+.host-table .list-row.empty td {
+  text-align: center;
+  color: var(--muted);
+  background: rgba(16, 23, 33, 0.6);
+}
+
+.host-cell.host-actions-cell {
+  text-align: center;
+  width: 1px;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.host-table .host-actions {
+  width: auto;
+  justify-content: center;
+}
+
+.host-table .host-actions .host-action {
+  flex: 0 0 auto;
+}
+
+.host-table .host-actions .btn {
+  width: auto;
 }
 
 .project-table {
@@ -365,6 +545,11 @@ body {
 
 .project-table th.col-project {
   text-align: left;
+}
+
+body.compact-mode .project-table th.col-select,
+body.compact-mode .project-cell.project-select {
+  display: none;
 }
 
 .sort-header {
@@ -462,10 +647,19 @@ body {
   height: 16px;
 }
 
+body.compact-mode .table-select-all input {
+  width: 14px;
+  height: 14px;
+}
+
 .project-table .list-row td {
   background: #101721;
   padding: 4px 8px;
   vertical-align: middle;
+}
+
+body.compact-mode .project-table .list-row td {
+  padding: 2px 6px;
 }
 
 .project-table .list-row td:first-child {
@@ -505,6 +699,10 @@ body {
   vertical-align: middle;
 }
 
+body.compact-mode .project-cell.project-select {
+  width: 36px;
+}
+
 .project-cell.project-status,
 .project-cell.project-updates,
 .project-cell.project-actions {
@@ -537,8 +735,39 @@ body {
   font-size: 32px;
 }
 
+body.compact-mode .project-cell.project-status .status-icon {
+  font-size: 24px;
+}
+
+body.compact-mode .status-badges .updates-icon {
+  font-size: 20px;
+}
+
+body.compact-mode .project-details {
+  display: none;
+}
+
+body.compact-mode .project-cell.project-actions .action-icon,
+body.compact-mode .host-actions .action-icon {
+  font-size: 24px;
+}
+
+body.compact-mode .project-cell.project-actions .btn:not(.hidden),
+body.compact-mode .host-actions .btn:not(.hidden) {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .project-cell.project-updates .updates-icon {
   font-size: 32px;
+}
+
+body.compact-mode .project-cell.project-updates .updates-icon {
+  font-size: 24px;
 }
 
 .updates-link {
@@ -574,6 +803,11 @@ body {
   min-width: 220px;
 }
 
+body.compact-mode .action-menu-panel {
+  min-width: 180px;
+  padding: 6px;
+}
+
 .action-menu-panel .row-actions {
   flex-wrap: wrap;
   justify-content: flex-start;
@@ -587,6 +821,11 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+body.compact-mode .list > .list-row {
+  padding: 8px;
+  gap: 6px;
 }
 
 .project-header {
@@ -639,6 +878,11 @@ body {
   width: 100%;
 }
 
+body.compact-mode .row-title {
+  font-size: 14px;
+  gap: 6px;
+}
+
 .row-title .backup-toggle {
   margin-left: auto;
 }
@@ -648,11 +892,19 @@ body {
   color: var(--muted);
 }
 
+body.compact-mode .row-subtitle {
+  font-size: 11px;
+}
+
 .project-meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+}
+
+body.compact-mode .project-meta {
+  gap: 6px;
 }
 
 .project-meta > span + span::before {
@@ -667,10 +919,18 @@ body {
   color: var(--muted);
 }
 
+body.compact-mode .backup-meta {
+  font-size: 11px;
+}
+
 .state-meta {
   white-space: nowrap;
   font-size: 12px;
   color: var(--muted);
+}
+
+body.compact-mode .state-meta {
+  font-size: 11px;
 }
 
 .backup-meta.backup-ok {
@@ -877,6 +1137,11 @@ body {
   border: 1px solid rgba(243, 244, 246, 0.06);
 }
 
+body.compact-mode .service-item {
+  padding: 6px 8px;
+  gap: 8px;
+}
+
 .service-item.action-running {
   border-color: rgba(59, 130, 246, 0.7);
   box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.5), 0 0 10px rgba(59, 130, 246, 0.2);
@@ -886,6 +1151,10 @@ body {
 .service-name {
   font-size: 13px;
   font-weight: 600;
+}
+
+body.compact-mode .service-name {
+  font-size: 12px;
 }
 
 .service-title {
@@ -930,6 +1199,10 @@ body {
   margin-top: 4px;
 }
 
+body.compact-mode .service-meta {
+  margin-top: 2px;
+}
+
 .service-actions {
   display: flex;
   gap: 6px;
@@ -938,12 +1211,24 @@ body {
   justify-content: flex-end;
 }
 
+body.compact-mode .service-actions {
+  gap: 4px;
+}
+
 .service-action {
   padding: 6px 10px;
 }
 
+body.compact-mode .service-action {
+  padding: 4px 8px;
+}
+
 .service-action .action-icon {
   font-size: 15px;
+}
+
+body.compact-mode .service-action .action-icon {
+  font-size: 14px;
 }
 
 .service-icons {
@@ -1019,6 +1304,11 @@ body {
   background: rgba(243, 244, 246, 0.06);
 }
 
+body.compact-mode .bulk-actions {
+  gap: 6px;
+  padding: 6px 8px;
+}
+
 
 .bulk-actions-wrap {
   display: flex;
@@ -1026,11 +1316,19 @@ body {
   gap: 6px;
 }
 
+body.compact-mode .bulk-actions-wrap {
+  gap: 4px;
+}
+
 .bulk-actions-label {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted);
+}
+
+body.compact-mode .bulk-actions-label {
+  display: none;
 }
 
 .progress {

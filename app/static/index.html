@@ -71,16 +71,29 @@
       </header>
 
       <section class="panel-grid">
-        <div class="panel">
+        <div class="panel host-panel">
           <div class="panel-head">
             <div>
               <h2>Hosts</h2>
               <div class="panel-sub">Manage hosts and quick actions.</div>
             </div>
           </div>
-          <ul class="list" id="hostList">
+          <ul class="list full-only" id="hostList">
             <li class="list-row empty">Loading hosts...</li>
           </ul>
+          <table class="host-table compact-only">
+            <thead>
+              <tr>
+                <th>Host</th>
+                <th class="col-actions">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="hostTableBody">
+              <tr class="list-row empty">
+                <td colspan="2">Loading hosts...</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
 
         <div class="panel">
@@ -276,6 +289,33 @@
           </button>
         </div>
       </li>
+    </template>
+
+    <template id="hostTableRowTemplate">
+      <tr class="list-row host-row">
+        <td class="host-cell host-main">
+          <div class="host-info">
+            <span class="row-title host-name"></span>
+            <span class="row-subtitle host-meta"></span>
+          </div>
+        </td>
+        <td class="host-cell host-actions-cell">
+          <div class="row-actions host-actions">
+            <button class="btn subtle host-action action-ready sleep-host" aria-label="Sleep host" title="Sleep host (stop running projects and mark sleeping)">
+              <span class="material-symbols-outlined action-icon">bedtime</span>
+            </button>
+            <button class="btn subtle host-action action-ready wake-host" aria-label="Wake host" title="Wake host (start sleeping projects)">
+              <span class="material-symbols-outlined action-icon">light_mode</span>
+            </button>
+            <button class="btn subtle host-action action-ready refresh-host" aria-label="Refresh project statuses" title="Refresh project statuses">
+              <span class="material-symbols-outlined action-icon">sync_desktop</span>
+            </button>
+            <button class="btn subtle host-action action-ready scan-host" aria-label="Scan projects" title="Scan projects on host">
+              <span class="material-symbols-outlined action-icon">scan</span>
+            </button>
+          </div>
+        </td>
+      </tr>
     </template>
 
     <template id="projectRowTemplate">

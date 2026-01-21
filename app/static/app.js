@@ -1,7 +1,9 @@
 const stateStatus = document.getElementById("stateStatus");
 const hostList = document.getElementById("hostList");
+const hostTableBody = document.getElementById("hostTableBody");
 const projectList = document.getElementById("projectList");
 const hostRowTemplate = document.getElementById("hostRowTemplate");
+const hostTableRowTemplate = document.getElementById("hostTableRowTemplate");
 const projectRowTemplate = document.getElementById("projectRowTemplate");
 const projectSelectToggle = document.getElementById("projectSelectToggle");
 const projectCount = document.getElementById("projectCount");
@@ -159,6 +161,18 @@ const scheduleLast = document.getElementById("scheduleLast");
 const scheduleNext = document.getElementById("scheduleNext");
 const scheduleSummaryBody = document.getElementById("scheduleSummaryBody");
 const scheduleConfig = document.getElementById("scheduleConfig");
+
+function applyCompactMode() {
+  const params = new URLSearchParams(window.location.search);
+  const compactParam = params.get("compact") || params.get("view") || params.get("mode");
+  const compactValue = (compactParam || "").toLowerCase();
+  const isCompact = ["1", "true", "yes", "compact"].includes(compactValue);
+  if (document.body) {
+    document.body.classList.toggle("compact-mode", isCompact);
+  }
+}
+
+applyCompactMode();
 
 function handleFindShortcut(event) {
   if (event.defaultPrevented) {
@@ -5336,12 +5350,34 @@ async function refreshProjectStatusAfterAction(hostId, projectName, options = {}
 
 
 function renderHostList() {
-  hostList.innerHTML = "";
+  if (hostList) {
+    hostList.innerHTML = "";
+  }
+  if (hostTableBody) {
+    hostTableBody.innerHTML = "";
+  }
+  const isCompact = document.body.classList.contains("compact-mode");
+  const listTarget = isCompact && hostTableBody ? hostTableBody : hostList;
+  const rowTemplate =
+    isCompact && hostTableRowTemplate ? hostTableRowTemplate : hostRowTemplate;
+  if (!listTarget || !rowTemplate) {
+    return;
+  }
   if (!state.hosts.length) {
-    const empty = document.createElement("li");
-    empty.className = "list-row empty";
-    empty.textContent = "No hosts configured.";
-    hostList.appendChild(empty);
+    if (listTarget === hostList) {
+      const empty = document.createElement("li");
+      empty.className = "list-row empty";
+      empty.textContent = "No hosts configured.";
+      listTarget.appendChild(empty);
+    } else {
+      const empty = document.createElement("tr");
+      empty.className = "list-row empty";
+      const emptyCell = document.createElement("td");
+      emptyCell.colSpan = 2;
+      emptyCell.textContent = "No hosts configured.";
+      empty.appendChild(emptyCell);
+      listTarget.appendChild(empty);
+    }
     return;
   }
 
@@ -5354,7 +5390,7 @@ function renderHostList() {
   });
 
   state.hosts.forEach((host) => {
-    const row = hostRowTemplate.content.firstElementChild.cloneNode(true);
+    const row = rowTemplate.content.firstElementChild.cloneNode(true);
     row.querySelector(".host-name").textContent = host.host_id;
     const projectCountText = host.projects?.length ?? Object.keys(host.project_paths || {}).length;
     row.querySelector(".host-meta").textContent = `${host.user}@${host.host}:${host.port} • ${projectCountText} projects`;
@@ -5362,26 +5398,30 @@ function renderHostList() {
     const allowHostActions = canManageProjects();
 
     const refreshBtn = row.querySelector(".refresh-host");
-    refreshBtn.addEventListener("click", () =>
-      runHostQuickAction(refreshBtn, host.host_id, "refresh", () =>
-        refreshHost(host.host_id)
-      )
-    );
-    setButtonAccess(
-      refreshBtn,
-      allowHostActions,
-      "Requires admin or power user.",
-      { hideOnDeny: true }
-    );
+    if (refreshBtn) {
+      refreshBtn.addEventListener("click", () =>
+        runHostQuickAction(refreshBtn, host.host_id, "refresh", () =>
+          refreshHost(host.host_id)
+        )
+      );
+      setButtonAccess(
+        refreshBtn,
+        allowHostActions,
+        "Requires admin or power user.",
+        { hideOnDeny: true }
+      );
+    }
     const scanBtn = row.querySelector(".scan-host");
-    scanBtn.addEventListener("click", () =>
-      runHostQuickAction(scanBtn, host.host_id, "scan", () =>
-        scanHostProjects(host.host_id)
-      )
-    );
-    setButtonAccess(scanBtn, allowHostActions, "Requires admin or power user.", {
-      hideOnDeny: true,
-    });
+    if (scanBtn) {
+      scanBtn.addEventListener("click", () =>
+        runHostQuickAction(scanBtn, host.host_id, "scan", () =>
+          scanHostProjects(host.host_id)
+        )
+      );
+      setButtonAccess(scanBtn, allowHostActions, "Requires admin or power user.", {
+        hideOnDeny: true,
+      });
+    }
     const sleepBtn = row.querySelector(".sleep-host");
     const wakeBtn = row.querySelector(".wake-host");
     const hostState = stateByHost[host.host_id];
@@ -5434,12 +5474,13 @@ function renderHostList() {
     if (scanBtn) {
       setActionRunning(scanBtn, hostActions.has("scan"));
     }
-    hostList.appendChild(row);
+    listTarget.appendChild(row);
   });
 }
 
 function renderProjectList() {
   projectList.innerHTML = "";
+  const isCompact = document.body.classList.contains("compact-mode");
   if (!state.actionMenuListenerBound) {
     document.addEventListener("click", () => closeAllActionMenus());
     state.actionMenuListenerBound = true;
@@ -5459,9 +5500,13 @@ function renderProjectList() {
   });
   syncServiceActionProgress(availableServiceKeys);
 
-  projectCount.textContent = `${visibleEntries.length} projects • ${countSelectedVisible(
-    visibleEntries
-  )} selected`;
+  if (isCompact) {
+    projectCount.textContent = `${visibleEntries.length} projects`;
+  } else {
+    projectCount.textContent = `${visibleEntries.length} projects • ${countSelectedVisible(
+      visibleEntries
+    )} selected`;
+  }
   updateProjectSelectToggle(visibleEntries);
   updateProjectSortIndicators();
 
@@ -5469,7 +5514,7 @@ function renderProjectList() {
     const empty = document.createElement("tr");
     empty.className = "list-row empty";
     const emptyCell = document.createElement("td");
-    emptyCell.colSpan = 6;
+    emptyCell.colSpan = isCompact ? 4 : 6;
     emptyCell.textContent = allEntries.length
       ? "No projects match filters."
       : "No projects available.";
@@ -5496,9 +5541,13 @@ function renderProjectList() {
       } else {
         state.selectedProjects.delete(entry.key);
       }
-      projectCount.textContent = `${visibleEntries.length} projects • ${countSelectedVisible(
-        visibleEntries
-      )} selected`;
+      if (isCompact) {
+        projectCount.textContent = `${visibleEntries.length} projects`;
+      } else {
+        projectCount.textContent = `${visibleEntries.length} projects • ${countSelectedVisible(
+          visibleEntries
+        )} selected`;
+      }
       updateBulkVisibility();
     });
 
@@ -5574,6 +5623,13 @@ function renderProjectList() {
 
     const updatesIcon = row.querySelector(".updates-icon");
     const updatesLink = row.querySelector(".updates-link");
+    const updatesCell = row.querySelector(".project-cell.project-updates");
+    if (updatesLink && updatesCell && updatesLink.parentElement !== updatesCell) {
+      updatesCell.appendChild(updatesLink);
+    }
+    if (updatesLink) {
+      updatesLink.classList.remove("compact-updates");
+    }
     const showUpdates = state.updatesEnabled && updatesInfo.className === "updates-yes";
     updatesIcon.classList.remove("yes");
     if (!state.updatesEnabled) {
@@ -6951,16 +7007,32 @@ async function initApp(forceReload = false) {
     state.initialized = true;
     updateRolePermissions();
   } catch (err) {
-    hostList.innerHTML = "";
-    const hostError = document.createElement("li");
-    hostError.className = "list-row empty";
-    hostError.textContent = `Failed to load data: ${err.message}`;
-    hostList.appendChild(hostError);
+    const isCompact = document.body.classList.contains("compact-mode");
+    if (hostList) {
+      hostList.innerHTML = "";
+    }
+    if (hostTableBody) {
+      hostTableBody.innerHTML = "";
+    }
+    if (isCompact && hostTableBody) {
+      const hostError = document.createElement("tr");
+      hostError.className = "list-row empty";
+      const hostErrorCell = document.createElement("td");
+      hostErrorCell.colSpan = 2;
+      hostErrorCell.textContent = `Failed to load data: ${err.message}`;
+      hostError.appendChild(hostErrorCell);
+      hostTableBody.appendChild(hostError);
+    } else if (hostList) {
+      const hostError = document.createElement("li");
+      hostError.className = "list-row empty";
+      hostError.textContent = `Failed to load data: ${err.message}`;
+      hostList.appendChild(hostError);
+    }
     projectList.innerHTML = "";
     const projectError = document.createElement("tr");
     projectError.className = "list-row empty";
     const projectErrorCell = document.createElement("td");
-    projectErrorCell.colSpan = 6;
+    projectErrorCell.colSpan = isCompact ? 4 : 6;
     projectErrorCell.textContent = "Projects unavailable.";
     projectError.appendChild(projectErrorCell);
     projectList.appendChild(projectError);
