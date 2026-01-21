@@ -2525,6 +2525,18 @@ body.compact-mode .bulk-actions-label {
   gap: 12px;
 }
 
+.token-create-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.token-create-row input {
+  flex: 1;
+  min-width: 0;
+  font-family: "Courier New", monospace;
+}
+
 .config-grid.config-grid-vertical {
   grid-template-columns: minmax(0, 1fr);
 }

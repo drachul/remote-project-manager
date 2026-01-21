@@ -135,17 +135,27 @@ const closeConfigModalBtn = document.getElementById("closeConfigModal");
 const hostConfigTemplate = document.getElementById("hostConfigTemplate");
 const backupConfigTemplate = document.getElementById("backupConfigTemplate");
 const userConfigTemplate = document.getElementById("userConfigTemplate");
+const tokenConfigTemplate = document.getElementById("tokenConfigTemplate");
 const hostConfigList = document.getElementById("hostConfigList");
 const backupConfigList = document.getElementById("backupConfigList");
 const userConfigList = document.getElementById("userConfigList");
+const tokenConfigList = document.getElementById("tokenConfigList");
 const configTabs = document.querySelectorAll(".config-tab");
 const configTabPanels = document.querySelectorAll(".config-tab-panel");
 const addHostConfigBtn = document.getElementById("addHostConfig");
 const addBackupConfigBtn = document.getElementById("addBackupConfig");
 const addUserConfigBtn = document.getElementById("addUserConfig");
+const addTokenConfigBtn = document.getElementById("addTokenConfig");
 const tokenExpiryInput = document.getElementById("tokenExpirySeconds");
 const saveTokenExpiryBtn = document.getElementById("saveTokenExpiry");
 const configStatus = document.getElementById("configStatus");
+const tokenCreateModal = document.getElementById("tokenCreateModal");
+const closeTokenCreateModalBtn = document.getElementById("closeTokenCreateModal");
+const tokenCreateValue = document.getElementById("tokenCreateValue");
+const tokenCreateName = document.getElementById("tokenCreateName");
+const tokenCreateStatus = document.getElementById("tokenCreateStatus");
+const createTokenSubmit = document.getElementById("createTokenSubmit");
+const copyTokenValueBtn = document.getElementById("copyTokenValue");
 const toastContainer = document.getElementById("toastContainer");
 const scheduleScope = document.getElementById("scheduleScope");
 const scheduleScopeHint = document.getElementById("scheduleScopeHint");
@@ -955,6 +965,14 @@ function isPowerRole() {
   return state.userRole === ROLE_ADMIN || state.userRole === ROLE_POWER;
 }
 
+function isAuthenticated() {
+  return Boolean(state.authToken);
+}
+
+function canAccessTokenConfig() {
+  return isAuthenticated();
+}
+
 function canManageProjects() {
   return isPowerRole();
 }
@@ -969,6 +987,10 @@ function canDeleteProject() {
 
 function canAccessConfig() {
   return isAdminRole();
+}
+
+function canAccessConfigModal() {
+  return isAdminRole() || canAccessTokenConfig();
 }
 
 function canAccessEvents() {
@@ -1046,8 +1068,8 @@ function updateBulkActionPermissions() {
 }
 
 function updateRolePermissions() {
-  const adminAllowed = canAccessConfig();
-  setButtonAccess(openConfigBtn, adminAllowed, "Admin access required.", {
+  const adminAllowed = isAdminRole();
+  setButtonAccess(openConfigBtn, canAccessConfigModal(), "Admin access required.", {
     hideOnDeny: true,
   });
   setButtonAccess(openEventStatusBtn, canAccessEvents(), "Admin access required.", {
@@ -4175,8 +4197,36 @@ function setConfigStatus(message, variant = "") {
   }
 }
 
+function setTokenCreateStatus(message, variant = "") {
+  if (!tokenCreateStatus) {
+    return;
+  }
+  tokenCreateStatus.textContent = message || "";
+  tokenCreateStatus.classList.remove("error", "success");
+  if (variant) {
+    tokenCreateStatus.classList.add(variant);
+  }
+}
+
+function isTokensOnlyConfig() {
+  return canAccessTokenConfig() && !isAdminRole();
+}
+
+function applyConfigAccessRestrictions() {
+  const tokensOnly = isTokensOnlyConfig();
+  configTabs.forEach((tab) => {
+    const isTokens = tab.dataset.tab === "tokens";
+    tab.classList.toggle("hidden", tokensOnly && !isTokens);
+  });
+  configTabPanels.forEach((panel) => {
+    const isTokens = panel.dataset.tabPanel === "tokens";
+    panel.classList.toggle("hidden", tokensOnly && !isTokens);
+  });
+  return tokensOnly;
+}
+
 function openConfigModal() {
-  if (!canAccessConfig()) {
+  if (!canAccessConfigModal()) {
     showToast("Admin access required.", "error");
     return;
   }
@@ -4184,8 +4234,9 @@ function openConfigModal() {
     return;
   }
   configModal.classList.remove("hidden");
+  const tokensOnly = applyConfigAccessRestrictions();
   initConfigTabs();
-  const activeTab = getActiveConfigTab() || "hosts";
+  const activeTab = tokensOnly ? "tokens" : getActiveConfigTab() || "hosts";
   setActiveConfigTab(activeTab);
   loadConfigEntries();
 }
@@ -4196,6 +4247,106 @@ function closeConfigModal() {
   }
   configModal.classList.add("hidden");
   setEventStatusActive(false);
+}
+
+function openTokenCreateModal() {
+  if (!tokenCreateModal) {
+    return;
+  }
+  tokenCreateModal.classList.remove("hidden");
+  if (tokenCreateValue) {
+    tokenCreateValue.value = "";
+  }
+  if (tokenCreateName) {
+    tokenCreateName.value = "";
+    tokenCreateName.focus();
+  }
+  if (copyTokenValueBtn) {
+    copyTokenValueBtn.disabled = true;
+  }
+  if (createTokenSubmit) {
+    createTokenSubmit.disabled = false;
+  }
+  setTokenCreateStatus("");
+}
+
+function closeTokenCreateModal() {
+  if (!tokenCreateModal) {
+    return;
+  }
+  tokenCreateModal.classList.add("hidden");
+  setTokenCreateStatus("");
+}
+
+async function copyTokenValue() {
+  if (!tokenCreateValue) {
+    return;
+  }
+  const value = tokenCreateValue.value.trim();
+  if (!value) {
+    setTokenCreateStatus("Create a token first.", "error");
+    return;
+  }
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+    } else {
+      tokenCreateValue.select();
+      document.execCommand("copy");
+      tokenCreateValue.setSelectionRange(0, 0);
+    }
+    showToast("Token copied.");
+  } catch (err) {
+    setTokenCreateStatus("Copy failed.", "error");
+  }
+}
+
+async function createPredefinedToken() {
+  if (!tokenCreateName || !createTokenSubmit) {
+    return;
+  }
+  const name = tokenCreateName.value.trim();
+  if (!name) {
+    setTokenCreateStatus("Name is required.", "error");
+    return;
+  }
+  createTokenSubmit.disabled = true;
+  setTokenCreateStatus("Creating token...");
+  try {
+    const response = await apiRequest("/config/tokens", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const text = await response.text();
+    let data = {};
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch (err) {
+        data = { token: text.trim() };
+      }
+    }
+    const tokenValue = data.token || "";
+    if (!tokenValue) {
+      throw new Error("Token missing from response.");
+    }
+    if (tokenCreateValue) {
+      tokenCreateValue.value = tokenValue;
+      tokenCreateValue.focus();
+      tokenCreateValue.select();
+    }
+    if (copyTokenValueBtn) {
+      copyTokenValueBtn.disabled = !tokenValue;
+    }
+    setTokenCreateStatus("Token created. Copy it now.", "success");
+    if (configModal && !configModal.classList.contains("hidden")) {
+      await loadConfigEntries();
+    }
+  } catch (err) {
+    createTokenSubmit.disabled = false;
+    setTokenCreateStatus(`Token create failed: ${err.message}`, "error");
+  }
 }
 
 function getActiveConfigTab() {
@@ -4392,6 +4543,36 @@ function buildUserConfigEntry(user, isNew) {
   return entry;
 }
 
+function buildTokenConfigEntry(token) {
+  const entry = tokenConfigTemplate.content.firstElementChild.cloneNode(true);
+  const nameInput = entry.querySelector(".token-name");
+  const idInput = entry.querySelector(".token-id");
+  const title = entry.querySelector(".token-title");
+  nameInput.value = token?.name || "";
+  idInput.value = token?.id || "";
+  entry.dataset.tokenId = token?.id || "";
+  const updateTitle = () => {
+    if (!title) {
+      return;
+    }
+    const value = nameInput.value.trim();
+    title.textContent = value || "Token";
+  };
+  updateTitle();
+  nameInput.addEventListener("input", updateTitle);
+  const saveBtn = entry.querySelector(".config-save");
+  const deleteBtn = entry.querySelector(".config-delete");
+  saveBtn.addEventListener("click", () => saveTokenConfig(entry));
+  deleteBtn.addEventListener("click", () => {
+    const name = nameInput.value.trim() || entry.dataset.tokenId;
+    if (!confirmDeleteResource("token", name)) {
+      return;
+    }
+    deleteTokenConfig(entry);
+  });
+  return entry;
+}
+
 function readHostConfig(entry) {
   return {
     id: entry.querySelector(".host-id").value.trim(),
@@ -4421,6 +4602,13 @@ function readUserConfig(entry) {
     username: entry.querySelector(".user-name").value.trim(),
     password: entry.querySelector(".user-password").value,
     role: entry.querySelector(".user-role")?.value || "normal",
+  };
+}
+
+function readTokenConfig(entry) {
+  return {
+    id: entry.dataset.tokenId || "",
+    name: entry.querySelector(".token-name").value.trim(),
   };
 }
 
@@ -4598,10 +4786,60 @@ async function deleteUserConfig(entry) {
   }
 }
 
-async function loadConfigEntries() {
-  if (!hostConfigList || !backupConfigList || !userConfigList) {
+async function saveTokenConfig(entry) {
+  const payload = readTokenConfig(entry);
+  const saveBtn = entry.querySelector(".config-save");
+  if (!payload.id) {
+    setConfigStatus("Token id is required.", "error");
     return;
   }
+  if (!payload.name) {
+    setConfigStatus("Token name is required.", "error");
+    return;
+  }
+  saveBtn.disabled = true;
+  setConfigStatus("Saving token...");
+  try {
+    const data = await api.put(
+      `/config/tokens/${encodeURIComponent(payload.id)}`,
+      { name: payload.name }
+    );
+    entry.dataset.tokenId = data.id;
+    entry.querySelector(".token-name").value = data.name || "";
+    entry.querySelector(".token-id").value = data.id;
+    setConfigStatus(`Token ${data.name} saved.`, "success");
+  } catch (err) {
+    setConfigStatus(`Token save failed: ${err.message}`, "error");
+  } finally {
+    saveBtn.disabled = false;
+  }
+}
+
+async function deleteTokenConfig(entry) {
+  const payload = readTokenConfig(entry);
+  const deleteBtn = entry.querySelector(".config-delete");
+  if (!payload.id) {
+    entry.remove();
+    return;
+  }
+  deleteBtn.disabled = true;
+  setConfigStatus(`Deleting token ${payload.name || payload.id}...`);
+  try {
+    await api.delete(`/config/tokens/${encodeURIComponent(payload.id)}`);
+    entry.remove();
+    setConfigStatus(`Token ${payload.name || payload.id} deleted.`, "success");
+  } catch (err) {
+    setConfigStatus(`Token delete failed: ${err.message}`, "error");
+  } finally {
+    deleteBtn.disabled = false;
+  }
+}
+
+async function loadConfigEntries() {
+  if (!hostConfigList || !backupConfigList || !userConfigList || !tokenConfigList) {
+    return;
+  }
+  const tokensOnly = isTokensOnlyConfig();
   setConfigStatus("Loading configuration...");
   if (addHostConfigBtn) {
     addHostConfigBtn.disabled = true;
@@ -4612,81 +4850,137 @@ async function loadConfigEntries() {
   if (addUserConfigBtn) {
     addUserConfigBtn.disabled = true;
   }
+  if (addTokenConfigBtn) {
+    addTokenConfigBtn.disabled = true;
+  }
   try {
-    const [hosts, backups, users] = await Promise.all([
-      api.get("/config/hosts"),
-      api.get("/config/backups"),
-      api.get("/config/users"),
-    ]);
-    hostConfigList.innerHTML = "";
-    backupConfigList.innerHTML = "";
-    userConfigList.innerHTML = "";
-    if (!hosts.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty";
-      empty.textContent = "No hosts configured.";
-      hostConfigList.appendChild(empty);
+    if (tokensOnly) {
+      const tokens = await api.get("/config/tokens");
+      hostConfigList.innerHTML = "";
+      backupConfigList.innerHTML = "";
+      userConfigList.innerHTML = "";
+      tokenConfigList.innerHTML = "";
+      if (!tokens.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No tokens configured.";
+        tokenConfigList.appendChild(empty);
+      } else {
+        tokens.forEach((token) => {
+          tokenConfigList.appendChild(buildTokenConfigEntry(token));
+        });
+      }
+      setConfigStatus("");
     } else {
-      hosts.forEach((host) => {
-        hostConfigList.appendChild(buildHostConfigEntry(host, false));
-      });
+      const [hosts, backups, users, tokens] = await Promise.all([
+        api.get("/config/hosts"),
+        api.get("/config/backups"),
+        api.get("/config/users"),
+        api.get("/config/tokens"),
+      ]);
+      hostConfigList.innerHTML = "";
+      backupConfigList.innerHTML = "";
+      userConfigList.innerHTML = "";
+      tokenConfigList.innerHTML = "";
+      if (!hosts.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No hosts configured.";
+        hostConfigList.appendChild(empty);
+      } else {
+        hosts.forEach((host) => {
+          hostConfigList.appendChild(buildHostConfigEntry(host, false));
+        });
+      }
+      if (!backups.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No backups configured.";
+        backupConfigList.appendChild(empty);
+      } else {
+        backups.forEach((backup) => {
+          backupConfigList.appendChild(buildBackupConfigEntry(backup, false));
+        });
+      }
+      state.backupTargetsAvailable = backups.some((backup) => backup.enabled);
+      updateBulkBackupAvailability();
+      if (!users.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No users configured.";
+        userConfigList.appendChild(empty);
+      } else {
+        users.forEach((user) => {
+          userConfigList.appendChild(buildUserConfigEntry(user, false));
+        });
+      }
+      if (!tokens.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No tokens configured.";
+        tokenConfigList.appendChild(empty);
+      } else {
+        tokens.forEach((token) => {
+          tokenConfigList.appendChild(buildTokenConfigEntry(token));
+        });
+      }
+      setConfigStatus("");
     }
-    if (!backups.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty";
-      empty.textContent = "No backups configured.";
-      backupConfigList.appendChild(empty);
-    } else {
-      backups.forEach((backup) => {
-        backupConfigList.appendChild(buildBackupConfigEntry(backup, false));
-      });
-    }
-    state.backupTargetsAvailable = backups.some((backup) => backup.enabled);
-    updateBulkBackupAvailability();
-    if (!users.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty";
-      empty.textContent = "No users configured.";
-      userConfigList.appendChild(empty);
-    } else {
-      users.forEach((user) => {
-        userConfigList.appendChild(buildUserConfigEntry(user, false));
-      });
-    }
-    setConfigStatus("");
   } catch (err) {
-    setConfigStatus(`Failed to load configuration: ${err.message}`, "error");
-    hostConfigList.innerHTML = "";
-    backupConfigList.innerHTML = "";
-    userConfigList.innerHTML = "";
-    const hostEmpty = document.createElement("div");
-    hostEmpty.className = "empty";
-    hostEmpty.textContent = "Configuration unavailable.";
-    hostConfigList.appendChild(hostEmpty);
-    const backupEmpty = document.createElement("div");
-    backupEmpty.className = "empty";
-    backupEmpty.textContent = "Configuration unavailable.";
-    backupConfigList.appendChild(backupEmpty);
-    const userEmpty = document.createElement("div");
-    userEmpty.className = "empty";
-    userEmpty.textContent = "Configuration unavailable.";
-    userConfigList.appendChild(userEmpty);
+    if (tokensOnly) {
+      setConfigStatus(`Failed to load tokens: ${err.message}`, "error");
+      hostConfigList.innerHTML = "";
+      backupConfigList.innerHTML = "";
+      userConfigList.innerHTML = "";
+      tokenConfigList.innerHTML = "";
+      const tokenEmpty = document.createElement("div");
+      tokenEmpty.className = "empty";
+      tokenEmpty.textContent = "Token configuration unavailable.";
+      tokenConfigList.appendChild(tokenEmpty);
+    } else {
+      setConfigStatus(`Failed to load configuration: ${err.message}`, "error");
+      hostConfigList.innerHTML = "";
+      backupConfigList.innerHTML = "";
+      userConfigList.innerHTML = "";
+      tokenConfigList.innerHTML = "";
+      const hostEmpty = document.createElement("div");
+      hostEmpty.className = "empty";
+      hostEmpty.textContent = "Configuration unavailable.";
+      hostConfigList.appendChild(hostEmpty);
+      const backupEmpty = document.createElement("div");
+      backupEmpty.className = "empty";
+      backupEmpty.textContent = "Configuration unavailable.";
+      backupConfigList.appendChild(backupEmpty);
+      const userEmpty = document.createElement("div");
+      userEmpty.className = "empty";
+      userEmpty.textContent = "Configuration unavailable.";
+      userConfigList.appendChild(userEmpty);
+      const tokenEmpty = document.createElement("div");
+      tokenEmpty.className = "empty";
+      tokenEmpty.textContent = "Configuration unavailable.";
+      tokenConfigList.appendChild(tokenEmpty);
+    }
   } finally {
-    await loadIntervals();
+    if (!tokensOnly) {
+      await loadIntervals();
+    }
     if (addHostConfigBtn) {
-      addHostConfigBtn.disabled = false;
+      addHostConfigBtn.disabled = tokensOnly;
     }
     if (addBackupConfigBtn) {
-      addBackupConfigBtn.disabled = false;
+      addBackupConfigBtn.disabled = tokensOnly;
     }
     if (addUserConfigBtn) {
-      addUserConfigBtn.disabled = false;
+      addUserConfigBtn.disabled = tokensOnly;
+    }
+    if (addTokenConfigBtn) {
+      addTokenConfigBtn.disabled = false;
     }
   }
 }
 
 async function loadIntervals() {
-  if (!tokenExpiryInput) {
+  if (!tokenExpiryInput || !isAdminRole()) {
     return;
   }
   try {
@@ -7301,6 +7595,9 @@ document.addEventListener("keydown", (event) => {
   if (configModal && !configModal.classList.contains("hidden")) {
     closeConfigModal();
   }
+  if (tokenCreateModal && !tokenCreateModal.classList.contains("hidden")) {
+    closeTokenCreateModal();
+  }
 });
 
 closeLogsModalBtn.addEventListener("click", closeLogsModal);
@@ -7461,6 +7758,23 @@ if (addUserConfigBtn) {
     const entry = buildUserConfigEntry(null, true);
     userConfigList.prepend(entry);
   });
+}
+if (addTokenConfigBtn) {
+  addTokenConfigBtn.addEventListener("click", openTokenCreateModal);
+}
+if (closeTokenCreateModalBtn) {
+  closeTokenCreateModalBtn.addEventListener("click", closeTokenCreateModal);
+}
+if (tokenCreateModal) {
+  tokenCreateModal
+    .querySelector(".modal-backdrop")
+    .addEventListener("click", closeTokenCreateModal);
+}
+if (copyTokenValueBtn) {
+  copyTokenValueBtn.addEventListener("click", copyTokenValue);
+}
+if (createTokenSubmit) {
+  createTokenSubmit.addEventListener("click", createPredefinedToken);
 }
 if (saveTokenExpiryBtn) {
   saveTokenExpiryBtn.addEventListener("click", saveTokenExpiry);

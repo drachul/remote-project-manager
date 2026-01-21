@@ -134,6 +134,24 @@ class AuthTokenRequest(BaseModel):
     password: str
 
 
+class TokenConfigEntry(BaseModel):
+    id: str
+    name: str
+    expiration: Optional[datetime] = None
+
+
+class TokenCreateRequest(BaseModel):
+    name: str
+
+
+class TokenUpdateRequest(BaseModel):
+    name: str
+
+
+class TokenCreateResponse(TokenConfigEntry):
+    token: str
+
+
 class PasswordChangeRequest(BaseModel):
     current_password: str
     new_password: str

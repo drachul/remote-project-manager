@@ -528,6 +528,30 @@
       </div>
     </template>
 
+    <template id="tokenConfigTemplate">
+      <div class="config-entry">
+        <div class="config-entry-head">
+          <div class="config-entry-title token-title"></div>
+        </div>
+        <div class="config-grid">
+          <label class="control">
+            Name
+            <input type="text" class="token-name" />
+          </label>
+          <label class="control">
+            Token id
+            <input type="text" class="token-id" readonly />
+          </label>
+        </div>
+        <div class="config-entry-footer">
+          <div class="config-entry-actions align-right">
+            <button class="btn subtle config-save">Save</button>
+            <button class="btn ghost danger-text config-delete">Delete</button>
+          </div>
+        </div>
+      </div>
+    </template>
+
 
     <div class="modal hidden" id="composeModal">
       <div class="modal-backdrop"></div>
@@ -907,7 +931,6 @@
         <header class="modal-header">
           <div>
             <div class="modal-title">Configuration</div>
-            <div class="modal-subtitle">Manage hosts and backup targets stored in the database.</div>
           </div>
           <button class="modal-close" id="closeConfigModal" aria-label="Close">
             <span class="material-symbols-outlined">close</span>
@@ -917,6 +940,7 @@
           <div class="config-tabs">
             <button class="config-tab active" data-tab="hosts">Hosts</button>
             <button class="config-tab" data-tab="users">Users</button>
+            <button class="config-tab" data-tab="tokens">Tokens</button>
             <button class="config-tab" data-tab="backups">Backups</button>
             <button class="config-tab" data-tab="events">Events</button>
             <button class="config-tab" data-tab="misc">Misc</button>
@@ -943,6 +967,18 @@
                 <button class="btn subtle align-right" id="addUserConfig">Add</button>
               </div>
               <div class="config-list" id="userConfigList"></div>
+            </section>
+          </div>
+          <div class="config-tab-panel" data-tab-panel="tokens">
+            <section class="config-section">
+              <div class="config-section-head">
+                <div>
+                  <div class="config-section-title">Tokens</div>
+                  <div class="config-section-sub">Create long-lived access tokens.</div>
+                </div>
+                <button class="btn subtle align-right" id="addTokenConfig">Add</button>
+              </div>
+              <div class="config-list" id="tokenConfigList"></div>
             </section>
           </div>
           <div class="config-tab-panel" data-tab-panel="backups">
@@ -999,6 +1035,38 @@
             </section>
           </div>
           <div class="config-status" id="configStatus"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal hidden" id="tokenCreateModal">
+      <div class="modal-backdrop"></div>
+      <div class="modal-card">
+        <header class="modal-header">
+          <div>
+            <div class="modal-title">Create token</div>
+            <div class="modal-subtitle">Copy this token now. It will not be shown again.</div>
+          </div>
+          <button class="modal-close" id="closeTokenCreateModal" aria-label="Close">
+            <span class="material-symbols-outlined">close</span>
+          </button>
+        </header>
+        <div class="modal-body">
+          <label class="control">
+            Token (generated on create)
+            <div class="token-create-row">
+              <input type="text" id="tokenCreateValue" readonly />
+              <button class="btn subtle" id="copyTokenValue" type="button">Copy</button>
+            </div>
+          </label>
+          <label class="control">
+            Name
+            <input type="text" id="tokenCreateName" />
+          </label>
+          <div class="config-status" id="tokenCreateStatus"></div>
+          <div class="schedule-actions align-right">
+            <button class="btn subtle" id="createTokenSubmit">Create</button>
+          </div>
         </div>
       </div>
     </div>

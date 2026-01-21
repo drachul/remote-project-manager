@@ -75,6 +75,10 @@ from .models import (
     UpdateApplyResponse,
     UpdateCheckResponse,
     AuthTokenRequest,
+    TokenConfigEntry,
+    TokenCreateRequest,
+    TokenCreateResponse,
+    TokenUpdateRequest,
     PasswordChangeRequest,
     UserConfigEntry,
     UserCreateRequest,
@@ -342,6 +346,8 @@ def _required_roles_for_request(path: str, method: str) -> set[str]:
     roles_power = {ROLE_ADMIN, ROLE_POWER}
     roles_admin = {ROLE_ADMIN}
 
+    if path.startswith("/config/tokens"):
+        return roles_all
     if path.startswith("/config/"):
         return roles_admin
     if path in (
@@ -464,29 +470,34 @@ def _extract_bearer_token(header: Optional[str]) -> str:
 
 def _verify_token_value(token: str) -> tuple[str, str]:
     payload = _parse_token_payload(token)
-    username = payload.get("username")
     token_id = payload.get("id")
     expiration_value = payload.get("expiration")
-    if not username or not token_id or not expiration_value:
+    if not token_id or not expiration_value:
         raise HTTPException(status_code=401, detail="Token payload incomplete.")
     expiration = _parse_token_expiration(str(expiration_value))
     if expiration < _now():
         raise HTTPException(status_code=401, detail="Token expired.")
     path = _require_db_path()
     with _open_db(path) as conn:
-        user_row = conn.execute(
-            "SELECT password, role FROM users WHERE username = ?", (username,)
-        ).fetchone()
-        if not user_row:
-            raise HTTPException(status_code=401, detail="User not found.")
-        role = _normalize_role(user_row[1])
         token_row = conn.execute(
-            "SELECT 1 FROM tokens WHERE id = ? AND expiration = ?",
+            "SELECT username FROM tokens WHERE id = ? AND expiration = ?",
             (token_id, expiration_value),
         ).fetchone()
         if not token_row:
             raise HTTPException(status_code=401, detail="Token not recognized.")
-    return username, role
+        stored_username = (token_row[0] or "").strip()
+        if not stored_username:
+            raise HTTPException(status_code=401, detail="Token user missing.")
+        payload_username = (payload.get("username") or "").strip()
+        if payload_username and payload_username != stored_username:
+            raise HTTPException(status_code=401, detail="Token user mismatch.")
+        user_row = conn.execute(
+            "SELECT password, role FROM users WHERE username = ?", (stored_username,)
+        ).fetchone()
+        if not user_row:
+            raise HTTPException(status_code=401, detail="User not found.")
+        role = _normalize_role(user_row[1])
+    return stored_username, role
 
 
 def _verify_request_token(request: Request) -> None:
@@ -871,7 +882,10 @@ def _ensure_db(path: str, *, log_exception: bool = True) -> None:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS tokens ("
                 "id TEXT NOT NULL, "
-                "expiration DATETIME"
+                "expiration DATETIME, "
+                "name TEXT, "
+                "predefined BOOLEAN DEFAULT 0, "
+                "username TEXT"
                 ")"
             )
             conn.execute(
@@ -1316,6 +1330,10 @@ def _token_expiry_seconds() -> int:
         return int(value)
     app.state.token_expiry_seconds = _load_token_expiry()
     return app.state.token_expiry_seconds
+
+
+def _predefined_token_expiration() -> datetime:
+    return datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
 
 
 def _get_user_credentials(username: str) -> tuple[Optional[str], str]:
@@ -3787,6 +3805,136 @@ def delete_user_config(username: str) -> SimpleStatusResponse:
     return SimpleStatusResponse(ok=True)
 
 
+@app.get("/config/tokens", response_model=List[TokenConfigEntry])
+def list_predefined_tokens(request: Request) -> List[TokenConfigEntry]:
+    username = (getattr(request.state, "username", "") or "").strip()
+    if not username:
+        raise HTTPException(status_code=401, detail="Unauthorized.")
+    role = _get_request_role(request)
+    path = _require_db_path()
+    with _open_db(path) as conn:
+        conn.row_factory = sqlite3.Row
+        if role == ROLE_ADMIN:
+            rows = conn.execute(
+                "SELECT id, name, expiration FROM tokens WHERE predefined = 1 ORDER BY name, id"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, name, expiration FROM tokens "
+                "WHERE predefined = 1 AND username = ? ORDER BY name, id",
+                (username,),
+            ).fetchall()
+    return [
+        TokenConfigEntry(
+            id=row["id"],
+            name=row["name"] or "",
+            expiration=_parse_db_datetime(row["expiration"]),
+        )
+        for row in rows
+    ]
+
+
+@app.post("/config/tokens", response_model=TokenCreateResponse, status_code=201)
+def create_predefined_token(payload: TokenCreateRequest, request: Request) -> TokenCreateResponse:
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required.")
+    token_id = str(uuid.uuid4())
+    expiration = _predefined_token_expiration()
+    username = (getattr(request.state, "username", "") or "").strip()
+    if not username:
+        raise HTTPException(status_code=401, detail="Unauthorized.")
+    role = _normalize_role(getattr(request.state, "user_role", ROLE_NORMAL))
+    token_payload = {
+        "username": username,
+        "id": token_id,
+        "expiration": expiration.isoformat(),
+        "role": role,
+    }
+    encoded = base64.b64encode(
+        json.dumps(token_payload, separators=(",", ":")).encode()
+    ).decode()
+    path = _require_db_path()
+    with _open_db(path) as conn:
+        conn.execute(
+            "INSERT INTO tokens (id, expiration, name, predefined, username) VALUES (?, ?, ?, ?, ?)",
+            (token_id, expiration.isoformat(), name, 1, username),
+        )
+    return TokenCreateResponse(
+        id=token_id,
+        name=name,
+        expiration=expiration,
+        token=encoded,
+    )
+
+
+@app.put("/config/tokens/{token_id}", response_model=TokenConfigEntry)
+def update_predefined_token(
+    request: Request,
+    token_id: str,
+    payload: TokenUpdateRequest,
+) -> TokenConfigEntry:
+    token_id = token_id.strip()
+    if not token_id:
+        raise HTTPException(status_code=400, detail="Token id is required.")
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required.")
+    username = (getattr(request.state, "username", "") or "").strip()
+    if not username:
+        raise HTTPException(status_code=401, detail="Unauthorized.")
+    role = _get_request_role(request)
+    path = _require_db_path()
+    with _open_db(path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT expiration, username FROM tokens WHERE id = ? AND predefined = 1",
+            (token_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Token not found.")
+        if role != ROLE_ADMIN and (row["username"] or "") != username:
+            raise HTTPException(status_code=403, detail="Token access denied.")
+        conn.execute(
+            "UPDATE tokens SET name = ? WHERE id = ? AND predefined = 1",
+            (name, token_id),
+        )
+    return TokenConfigEntry(
+        id=token_id,
+        name=name,
+        expiration=_parse_db_datetime(row["expiration"]),
+    )
+
+
+@app.delete("/config/tokens/{token_id}", response_model=SimpleStatusResponse)
+def delete_predefined_token(request: Request, token_id: str) -> SimpleStatusResponse:
+    token_id = token_id.strip()
+    if not token_id:
+        raise HTTPException(status_code=400, detail="Token id is required.")
+    username = (getattr(request.state, "username", "") or "").strip()
+    if not username:
+        raise HTTPException(status_code=401, detail="Unauthorized.")
+    role = _get_request_role(request)
+    path = _require_db_path()
+    with _open_db(path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT username FROM tokens WHERE id = ? AND predefined = 1",
+            (token_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Token not found.")
+        if role != ROLE_ADMIN and (row["username"] or "") != username:
+            raise HTTPException(status_code=403, detail="Token access denied.")
+        result = conn.execute(
+            "DELETE FROM tokens WHERE id = ? AND predefined = 1",
+            (token_id,),
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Token not found.")
+    return SimpleStatusResponse(ok=True)
+
+
 @app.get("/config/token-expiry", response_model=IntervalResponse)
 def get_token_expiry() -> IntervalResponse:
     return IntervalResponse(seconds=_token_expiry_seconds())
@@ -4254,8 +4402,8 @@ def create_auth_token(payload: AuthTokenRequest) -> str:
     path = _require_db_path()
     with _open_db(path) as conn:
         conn.execute(
-            "INSERT INTO tokens (id, expiration) VALUES (?, ?)",
-            (token_id, expiration.isoformat()),
+            "INSERT INTO tokens (id, expiration, name, predefined, username) VALUES (?, ?, ?, ?, ?)",
+            (token_id, expiration.isoformat(), None, 0, username),
         )
         conn.execute(
             "UPDATE users SET last_login = ? WHERE username = ?",
