@@ -96,7 +96,7 @@
           </table>
         </div>
 
-        <div class="panel">
+        <div class="panel projects-panel">
           <div class="panel-head">
             <div>
               <h2>Projects</h2>
@@ -164,6 +164,14 @@
                     <input type="checkbox" id="projectSelectToggle" aria-label="Select all projects" />
                   </label>
                 </th>
+                <th class="col-host">
+                  <div class="header-controls">
+                    <button class="sort-header" data-sort="host" type="button">
+                      <span>Host</span>
+                      <span class="sort-indicator"></span>
+                    </button>
+                  </div>
+                </th>
                 <th class="col-project">
                   <div class="header-controls">
                     <button class="sort-header" data-sort="name" type="button">
@@ -172,6 +180,9 @@
                     </button>
                     <button class="filter-toggle" data-filter="hosts" type="button" aria-label="Filter hosts" title="Filter hosts">
                       <span class="material-symbols-outlined action-icon">filter_list</span>
+                    </button>
+                    <button class="btn subtle compact-only compact-clear" id="clearProjectFiltersCompact" aria-label="Clear filters" title="Clear filters">
+                      <span class="material-symbols-outlined action-icon">filter_alt_off</span>
                     </button>
                     <div class="filter-menu hidden" data-filter-menu="hosts">
                       <label class="control">
@@ -322,6 +333,9 @@
       <tr class="list-row project-row">
         <td class="project-cell project-select">
           <input class="project-checkbox" type="checkbox" aria-label="Select project" />
+        </td>
+        <td class="project-cell project-host">
+          <span class="project-host-id"></span>
         </td>
         <td class="project-cell project-main">
           <div class="row-title project-title">

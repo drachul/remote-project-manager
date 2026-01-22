@@ -71,7 +71,7 @@ body {
 }
 
 body.compact-mode .page {
-  padding: 16px 16px 32px;
+  padding: 4px;
   max-width: 1100px;
 }
 
@@ -87,7 +87,7 @@ body.compact-mode .page::after {
 
 body.compact-mode .top {
   gap: 16px;
-  margin-bottom: 16px;
+  margin-bottom: 0;
 }
 
 body.compact-mode .brand {
@@ -322,13 +322,17 @@ body.compact-mode .panel-grid {
 }
 
 body.compact-mode .panel {
-  padding: 6px 8px;
+  padding: 0;
   gap: 12px;
   min-height: 320px;
 }
 
 body.compact-mode .host-panel {
-  min-height: 0;
+  display: none;
+}
+
+body.compact-mode .projects-panel .panel-head {
+  display: none;
 }
 
 .panel-head {
@@ -382,7 +386,7 @@ body.compact-mode .project-toolbar {
 
 .compact-mode .host-table th,
 .compact-mode .project-table th {
-  padding: 2px 8px 6px;
+  padding: 0 8px 6px;
   font-size: 10px;
 }
 
@@ -412,9 +416,7 @@ body.compact-mode #openRestoreModal,
 body.compact-mode #openCreateProject,
 body.compact-mode #bulkActionsWrap,
 body.compact-mode #bulkProgress,
-body.compact-mode #clearProjectFilters,
-body.compact-mode .filter-toggle,
-body.compact-mode .filter-menu {
+body.compact-mode #clearProjectFilters {
   display: none;
 }
 
@@ -529,6 +531,15 @@ body.compact-mode .host-table .list-row td {
   width: 44px;
 }
 
+.project-table th.col-host {
+  display: none;
+  text-align: left;
+}
+
+body.compact-mode .project-table th.col-host {
+  display: table-cell;
+}
+
 .project-table th.col-status,
 .project-table th.col-updates,
 .project-table th.col-actions {
@@ -583,6 +594,19 @@ body.compact-mode .project-cell.project-select {
 }
 
 .col-project .header-controls {
+  justify-content: flex-start;
+}
+
+body.compact-mode .col-project .header-controls {
+  display: flex;
+  width: 100%;
+}
+
+body.compact-mode .col-project .compact-clear {
+  margin-left: auto;
+}
+
+.col-host .header-controls {
   justify-content: flex-start;
 }
 
@@ -667,6 +691,11 @@ body.compact-mode .project-table .list-row td {
   border-bottom-left-radius: 14px;
 }
 
+body.compact-mode .project-table .list-row td.project-host {
+  border-top-left-radius: 14px;
+  border-bottom-left-radius: 14px;
+}
+
 .project-table .list-row td:last-child {
   border-top-right-radius: 14px;
   border-bottom-right-radius: 14px;
@@ -701,6 +730,34 @@ body.compact-mode .project-table .list-row td {
 
 body.compact-mode .project-cell.project-select {
   width: 36px;
+}
+
+.project-cell.project-host {
+  display: none;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+body.compact-mode .project-cell.project-host {
+  display: table-cell;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+body.compact-mode .project-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--card);
+}
+
+body.compact-mode .project-table thead th.col-host {
+  border-top-left-radius: 12px;
+}
+
+body.compact-mode .project-table thead th:last-child {
+  border-top-right-radius: 12px;
 }
 
 .project-cell.project-status,
@@ -760,6 +817,26 @@ body.compact-mode .host-actions .btn:not(.hidden) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+body.compact-mode .compact-clear {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+body.compact-mode .compact-clear .action-icon {
+  font-size: 16px;
+}
+
+body.compact-mode .compact-clear.active .action-icon {
+  color: var(--teal);
 }
 
 .project-cell.project-updates .updates-icon {
@@ -879,7 +956,7 @@ body.compact-mode .list > .list-row {
 }
 
 body.compact-mode .row-title {
-  font-size: 14px;
+  font-size: 12px;
   gap: 6px;
 }
 
@@ -1419,6 +1496,10 @@ body.compact-mode .bulk-actions-label {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+body.compact-mode .project-name {
+  font-size: 14px;
 }
 
 .restore-badge {

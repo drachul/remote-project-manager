@@ -15,6 +15,7 @@ const filterMenus = document.querySelectorAll(".filter-menu");
 const projectSortHeaders = document.querySelectorAll(".project-table .sort-header");
 const projectFilterName = document.getElementById("projectFilterName");
 const clearProjectFiltersBtn = document.getElementById("clearProjectFilters");
+const clearProjectFiltersCompactBtn = document.getElementById("clearProjectFiltersCompact");
 const projectFilterCount = document.getElementById("projectFilterCount");
 const bulkActions = document.getElementById("bulkActions");
 const bulkActionsWrap = document.getElementById("bulkActionsWrap");
@@ -764,6 +765,9 @@ function updateProjectFilterIndicators() {
   if (projectFilterCount) {
     projectFilterCount.textContent = String(activeCount);
     projectFilterCount.classList.toggle('hidden', activeCount === 0);
+  }
+  if (clearProjectFiltersCompactBtn) {
+    clearProjectFiltersCompactBtn.classList.toggle("active", activeCount > 0);
   }
 }
 
@@ -5463,7 +5467,9 @@ function sortProjectEntries(entries) {
   const sorted = [...entries];
   sorted.sort((a, b) => {
     let cmp = 0;
-    if (sortBy === "status") {
+    if (sortBy === "host") {
+      cmp = (a.hostId || "").localeCompare(b.hostId || "");
+    } else if (sortBy === "status") {
       cmp =
         statusRank(normalizeProjectStatus(a)) -
         statusRank(normalizeProjectStatus(b));
@@ -5915,7 +5921,7 @@ function renderProjectList() {
     const empty = document.createElement("tr");
     empty.className = "list-row empty";
     const emptyCell = document.createElement("td");
-    emptyCell.colSpan = isCompact ? 4 : 6;
+    emptyCell.colSpan = isCompact ? 5 : 6;
     emptyCell.textContent = allEntries.length
       ? "No projects match filters."
       : "No projects available.";
@@ -5934,7 +5940,7 @@ function renderProjectList() {
       const allowComposeEdit = canEditCompose();
       const allowDeleteProject = canDeleteProject();
       const allowComposeCommand = canManageProjects();
-      const checkbox = row.querySelector(".project-checkbox");
+    const checkbox = row.querySelector(".project-checkbox");
     checkbox.checked = state.selectedProjects.has(entry.key);
     checkbox.addEventListener("change", () => {
       if (checkbox.checked) {
@@ -5951,6 +5957,12 @@ function renderProjectList() {
       }
       updateBulkVisibility();
     });
+
+    const hostCell = row.querySelector(".project-host-id");
+    if (hostCell) {
+      hostCell.textContent = entry.hostId || "";
+      hostCell.title = entry.hostId ? `Host: ${entry.hostId}` : "Host";
+    }
 
     const nameCell = row.querySelector(".project-name");
     nameCell.textContent = entry.displayName || entry.projectName;
@@ -7433,7 +7445,7 @@ async function initApp(forceReload = false) {
     const projectError = document.createElement("tr");
     projectError.className = "list-row empty";
     const projectErrorCell = document.createElement("td");
-    projectErrorCell.colSpan = isCompact ? 4 : 6;
+    projectErrorCell.colSpan = isCompact ? 5 : 6;
     projectErrorCell.textContent = "Projects unavailable.";
     projectError.appendChild(projectErrorCell);
     projectList.appendChild(projectError);
@@ -8008,6 +8020,9 @@ if (projectFilterName) {
 }
 if (clearProjectFiltersBtn) {
   clearProjectFiltersBtn.addEventListener("click", clearProjectFilters);
+}
+if (clearProjectFiltersCompactBtn) {
+  clearProjectFiltersCompactBtn.addEventListener("click", clearProjectFilters);
 }
 document.querySelectorAll(".bulk-action").forEach((button) => {
   button.addEventListener("click", (event) => {
