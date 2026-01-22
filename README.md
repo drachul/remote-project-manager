@@ -88,6 +88,15 @@ Token validation:
 - `expiration` must be in the future.
 - `id`/`expiration` must match a row in `tokens`.
 
+### Long-lived tokens
+
+The UI includes a Tokens configuration page for creating long-lived tokens. These are stored in the `tokens` table with a user-defined name and an expiration far in the future.
+
+Notes:
+- The token value is only shown once when created; copy it immediately.
+- Non-admin users can only see tokens they created; admins can see all tokens.
+- Long-lived tokens can be used as normal bearer tokens.
+
 
 User roles:
 - **admin**: full access to all configuration, backup/restore, and project actions.
@@ -111,7 +120,7 @@ Open `http://localhost:8000/` to access the management dashboard. The UI provide
 - Host and project management (scan, start/stop/restart, compose editor, logs).
 - Compose editor with syntax highlighting and a review/save diff workflow.
 - Backup configuration, scheduling, restore workflows, and background events.
-- Configuration tabs for hosts, backups, users, and misc intervals.
+- Configuration tabs for hosts, backups, users, tokens, and misc intervals.
 - Status, update, and project details visibility.
 - UI actions are enabled/disabled based on the signed-in user role.
 
@@ -121,6 +130,22 @@ The UI is split into three primary areas:
 - **Hosts**: manage connections, scan for projects, and trigger host-level actions.
 - **Projects**: table view of project status, updates, actions, details, and compose editing.
 - **Details & Modals**: compose editor, logs, backup schedule, restore, commands, and background events.
+
+### Compact mode
+
+Compact mode is designed for embedding the dashboard in iframes (for example, Homarr widgets). Enable it with a query parameter:
+
+```
+http://localhost:8000/?mode=compact
+```
+
+You can also provide a token in the query string to authenticate without the login modal:
+
+```
+http://localhost:8000/?mode=compact&token=<base64-token>
+```
+
+The token is the same base64 value returned by `/auth/token` or created in the Tokens configuration page. Compact mode stores the token in session storage for subsequent requests.
 
 ## Backups & restore
 
