@@ -788,12 +788,68 @@ body.compact-mode .project-table thead th:last-child {
   gap: 6px;
 }
 
+.status-icon-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.status-count {
+  position: absolute;
+  bottom: 0;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #f59e0b;
+  color: #0b1119;
+  box-shadow: 0 0 0 1px rgba(16, 23, 33, 0.65);
+}
+
+.status-count.health-count {
+  left: 0;
+  transform: translate(-50%, 50%);
+}
+
+.status-count.down-count {
+  right: 0;
+  transform: translate(50%, 50%);
+}
+
+.status-count.warn {
+  background: #f59e0b;
+  color: #0b1119;
+}
+
+.status-count.danger {
+  background: #ef4444;
+  color: #fff;
+}
+
+.status-icon-wrap .status-icon {
+  position: relative;
+  z-index: 1;
+}
+
 .project-cell.project-status .status-icon {
   font-size: 32px;
 }
 
 body.compact-mode .project-cell.project-status .status-icon {
   font-size: 24px;
+}
+
+body.compact-mode .status-count {
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  font-size: 9px;
 }
 
 body.compact-mode .status-badges .updates-icon {

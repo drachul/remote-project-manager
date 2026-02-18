@@ -6025,6 +6025,23 @@ function renderProjectList() {
     }
 
     const statusIcon = row.querySelector(".status-icon");
+    const healthCountBadge = row.querySelector(".status-count.health-count");
+    const downCountBadge = row.querySelector(".status-count.down-count");
+    const badHealthCount = entry.services.reduce((total, service) => {
+      const health = (service.health_status || "").toLowerCase();
+      if (!health || health === "healthy") {
+        return total;
+      }
+      return total + 1;
+    }, 0);
+    const unhealthyCount = entry.services.reduce((total, service) => {
+      const health = (service.health_status || "").toLowerCase();
+      return total + (health === "unhealthy" ? 1 : 0);
+    }, 0);
+    const downCount = entry.services.reduce((total, service) => {
+      const status = (service.status || "").toLowerCase();
+      return total + (status === "down" ? 1 : 0);
+    }, 0);
     statusIcon.classList.remove("up", "down", "degraded", "unknown");
     if (statusInfo.className) {
       statusIcon.classList.add(statusInfo.className);
@@ -6033,6 +6050,36 @@ function renderProjectList() {
     }
     statusIcon.textContent = statusIconName(statusInfo.className);
     statusIcon.title = `Status: ${statusInfo.label}`;
+
+    if (healthCountBadge) {
+      healthCountBadge.classList.remove("warn", "danger");
+      if (badHealthCount > 0) {
+        healthCountBadge.textContent = String(badHealthCount);
+        healthCountBadge.title = `${badHealthCount} service health issue${
+          badHealthCount === 1 ? "" : "s"
+        }`;
+        healthCountBadge.classList.add(unhealthyCount > 0 ? "danger" : "warn");
+        healthCountBadge.classList.remove("hidden");
+      } else {
+        healthCountBadge.textContent = "";
+        healthCountBadge.title = "";
+        healthCountBadge.classList.add("hidden");
+      }
+    }
+
+    if (downCountBadge) {
+      downCountBadge.classList.remove("warn", "danger");
+      if (downCount > 0) {
+        downCountBadge.textContent = String(downCount);
+        downCountBadge.title = `${downCount} service${downCount === 1 ? "" : "s"} down`;
+        downCountBadge.classList.add("danger");
+        downCountBadge.classList.remove("hidden");
+      } else {
+        downCountBadge.textContent = "";
+        downCountBadge.title = "";
+        downCountBadge.classList.add("hidden");
+      }
+    }
 
     const updatesIcon = row.querySelector(".updates-icon");
     const updatesLink = row.querySelector(".updates-link");
