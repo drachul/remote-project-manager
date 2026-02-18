@@ -6096,16 +6096,25 @@ function renderProjectList() {
       updatesLink.classList.remove("compact-updates");
     }
     const showUpdates = state.updatesEnabled && updatesInfo.className === "updates-yes";
+    const showUpdatesCount =
+      showUpdates && updatesCount > 0 && entry.serviceCount > 1;
+    if (updatesCountBadge) {
+      updatesCountBadge.classList.toggle("hidden", !showUpdatesCount);
+      if (showUpdatesCount) {
+        updatesCountBadge.textContent = String(updatesCount);
+        updatesCountBadge.title = `${updatesCount} service image update${
+          updatesCount === 1 ? "" : "s"
+        }`;
+      } else {
+        updatesCountBadge.textContent = "";
+        updatesCountBadge.title = "";
+      }
+    }
     updatesIcon.classList.remove("yes");
     if (!state.updatesEnabled) {
       updatesIcon.textContent = "";
       updatesIcon.title = "Updates disabled";
       updatesIcon.classList.add("hidden");
-      if (updatesCountBadge) {
-        updatesCountBadge.textContent = "";
-        updatesCountBadge.title = "";
-        updatesCountBadge.classList.add("hidden");
-      }
       if (updatesLink) {
         updatesLink.classList.add("hidden");
         updatesLink.classList.remove("no-link");
@@ -6115,19 +6124,6 @@ function renderProjectList() {
       updatesIcon.textContent = "published_with_changes";
       updatesIcon.title = "Updates available";
       updatesIcon.classList.remove("hidden");
-      if (updatesCountBadge) {
-        if (updatesCount > 0 && entry.serviceCount > 1) {
-          updatesCountBadge.textContent = String(updatesCount);
-          updatesCountBadge.title = `${updatesCount} service image update${
-            updatesCount === 1 ? "" : "s"
-          }`;
-          updatesCountBadge.classList.remove("hidden");
-        } else {
-          updatesCountBadge.textContent = "";
-          updatesCountBadge.title = "";
-          updatesCountBadge.classList.add("hidden");
-        }
-      }
       if (updatesLink) {
         updatesLink.classList.remove("hidden");
         updatesLink.classList.remove("no-link");
@@ -6136,11 +6132,6 @@ function renderProjectList() {
       updatesIcon.textContent = "";
       updatesIcon.title = "Updates: none";
       updatesIcon.classList.add("hidden");
-      if (updatesCountBadge) {
-        updatesCountBadge.textContent = "";
-        updatesCountBadge.title = "";
-        updatesCountBadge.classList.add("hidden");
-      }
       if (updatesLink) {
         updatesLink.classList.add("hidden");
         updatesLink.classList.remove("no-link");
