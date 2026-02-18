@@ -1517,6 +1517,13 @@ def _derive_overall_status(statuses: List[str]) -> str:
     return "degraded"
 
 
+def _has_unhealthy_health(values: List[Optional[str]]) -> bool:
+    for value in values:
+        if value and str(value).lower() == "unhealthy":
+            return True
+    return False
+
+
 def _project_name_from_path(path: str, fallback: str) -> str:
     if path:
         name = os.path.basename(path.rstrip("/"))
@@ -2010,11 +2017,13 @@ def _select_update_candidate(host_ids: Optional[List[str]]) -> Optional[dict]:
     with _open_db(path) as conn:
         conn.row_factory = sqlite3.Row
         params: List[str] = []
-        where_clause = "WHERE project_state.updates_available = 0"
+        where_clause = (
+            "WHERE (service_state.update_available IS NULL OR service_state.update_available = 0)"
+        )
         if host_ids:
             placeholders = ",".join(["?"] * len(host_ids))
             where_clause = (
-                "WHERE project_state.updates_available = 0 AND "
+                "WHERE (service_state.update_available IS NULL OR service_state.update_available = 0) AND "
                 f"project_state.host_id IN ({placeholders})"
             )
             params = list(host_ids)
@@ -2033,12 +2042,11 @@ def _select_update_candidate(host_ids: Optional[List[str]]) -> Optional[dict]:
             return dict(row)
 
         project_params: List[str] = []
-        project_where = "AND project_state.updates_available = 0"
+        project_where = ""
         if host_ids:
             placeholders = ",".join(["?"] * len(host_ids))
             project_where = (
-                "AND project_state.updates_available = 0 AND "
-                f"project_state.host_id IN ({placeholders})"
+                f"AND project_state.host_id IN ({placeholders})"
             )
             project_params = list(host_ids)
         row = conn.execute(
@@ -2096,6 +2104,7 @@ def _select_project_service_candidate(host_id: str, project_id: str) -> Optional
             "SELECT service_state.id AS service_id, service_state.update_checked_at "
             "FROM service_state "
             "WHERE service_state.host_id = ? AND service_state.project_id = ? "
+            "AND (service_state.update_available IS NULL OR service_state.update_available = 0) "
             "ORDER BY service_state.update_checked_at IS NOT NULL, service_state.update_checked_at ASC "
             "LIMIT 1",
             (host_id, project_id),
@@ -2178,18 +2187,21 @@ def _update_service_update_state(
         )
 
         rows = conn.execute(
-            "SELECT status, update_available, refreshed_at FROM service_state "
+            "SELECT status, update_available, refreshed_at, health_status FROM service_state "
             "WHERE host_id = ? AND project_id = ?",
             (host_id, project_id),
         ).fetchall()
         statuses = [row[0] for row in rows if row[0]]
         updates_available = any(bool(row[1]) for row in rows)
         refreshed_values = [_parse_timestamp(row[2]) for row in rows if row[2]]
+        unhealthy = _has_unhealthy_health([row[3] for row in rows])
         project_refreshed = None
         for value in refreshed_values:
             if value and (project_refreshed is None or value > project_refreshed):
                 project_refreshed = value
         overall_status = _derive_overall_status(statuses)
+        if unhealthy and overall_status != "down":
+            overall_status = "degraded"
         conn.execute(
             "UPDATE project_state SET overall_status = ?, updates_available = ?, refreshed_at = ? "
             "WHERE host_id = ? AND id = ?",
@@ -2273,13 +2285,14 @@ def _update_project_status_state(
             )
 
         rows = conn.execute(
-            "SELECT status, update_available, refreshed_at FROM service_state "
+            "SELECT status, update_available, refreshed_at, health_status FROM service_state "
             "WHERE host_id = ? AND project_id = ?",
             (host_id, project_id),
         ).fetchall()
         statuses = [row[0] for row in rows if row[0]]
         updates_available = any(bool(row[1]) for row in rows)
         refreshed_values = [_parse_timestamp(row[2]) for row in rows if row[2]]
+        unhealthy = _has_unhealthy_health([row[3] for row in rows])
         project_refreshed = None
         for value in refreshed_values:
             if value and (project_refreshed is None or value > project_refreshed):
@@ -2289,6 +2302,8 @@ def _update_project_status_state(
         derived_status = _derive_overall_status(statuses)
         if derived_status == "unknown" and overall_status:
             derived_status = overall_status
+        if unhealthy and derived_status != "down":
+            derived_status = "degraded"
         conn.execute(
             "UPDATE project_state SET overall_status = ?, updates_available = ?, refreshed_at = ? "
             "WHERE host_id = ? AND id = ?",

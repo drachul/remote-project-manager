@@ -105,7 +105,7 @@ User roles:
 
 ## State refresh & updates
 
-The service refreshes project status and update availability on separate timers. Set `STATE_REFRESH_SECONDS` and `UPDATE_REFRESH_SECONDS` to control cadence (set either to `0` to disable periodic refresh). Update checks are rate-limited to five registry manifest requests per hour.
+The service refreshes project status and update availability on separate timers. Set `STATE_REFRESH_SECONDS` and `UPDATE_REFRESH_SECONDS` to control cadence (set either to `0` to disable periodic refresh). Update checks are rate-limited to five registry manifest requests per hour and only skip services that already have an update flagged.
 
 UI notes:
 - The Misc tab includes a toggle to enable/disable periodic update checks (manual checks still work when periodic checks are disabled).
@@ -113,6 +113,7 @@ UI notes:
 - Service lists show image links for project (`org.opencontainers.image.url`/`rpm.project_url`), source (`org.opencontainers.image.source`/`rpm.source_url`), and docs (`org.opencontainers.image.documentation`/`rpm.documentation_url`).
 - Update icons indicate available image updates (manual checks still available).
 - Service health is displayed when containers report a Docker health status; services without a health check show a warning icon.
+- Projects are marked **degraded** if any service reports **unhealthy** health status (projects still show **down** when all services are down).
 ## Web UI
 
 
