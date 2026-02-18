@@ -2832,6 +2832,13 @@ async def _refresh_project_links(
     project_id: str,
 ) -> None:
     host = _host(host_id)
+    service_names: Optional[List[str]] = None
+    try:
+        service_names = await asyncio.to_thread(
+            compose.list_service_names, host, project_name
+        )
+    except Exception:
+        service_names = None
     try:
         service_images = await asyncio.to_thread(
             compose.list_service_images, host, project_name
@@ -2844,6 +2851,11 @@ async def _refresh_project_links(
         )
     except Exception:
         service_links = {}
+    if service_names is not None:
+        async with app.state.state_lock:
+            await asyncio.to_thread(
+                _sync_project_services, host_id, project_id, service_names
+            )
     if not service_images and not service_links:
         return
     existing_links = await asyncio.to_thread(

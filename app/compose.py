@@ -1632,6 +1632,26 @@ def list_service_images(host: HostConfig, project: str) -> Dict[str, str]:
         pass
     return service_images
 
+
+def list_service_names(host: HostConfig, project: str) -> List[str]:
+    config = _compose_config_json(host, project)
+    service_names: List[str] = []
+    if isinstance(config, dict):
+        services = config.get("services", {})
+        if isinstance(services, dict):
+            service_names.extend([name for name in services.keys() if name])
+        elif isinstance(services, list):
+            for service in services:
+                if isinstance(service, dict):
+                    name = service.get("name") or service.get("service")
+                    if name:
+                        service_names.append(name)
+    unique = []
+    for name in service_names:
+        if name not in unique:
+            unique.append(name)
+    return unique
+
 def list_project_images(host: HostConfig, project: str) -> List[str]:
     images: List[str] = []
     service_images = list_service_images(host, project)
