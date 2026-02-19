@@ -926,6 +926,10 @@ body.compact-mode .project-cell.project-updates .updates-icon {
   box-shadow: 0 0 0 1px rgba(16, 23, 33, 0.65);
 }
 
+.project-cell.project-updates .updates-count:empty {
+  display: none;
+}
+
 body.compact-mode .project-cell.project-updates .updates-count {
   min-width: 14px;
   height: 14px;
