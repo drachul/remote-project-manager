@@ -109,9 +109,10 @@ The service refreshes project status and update availability on separate timers.
 
 UI notes:
 - The Misc tab includes a toggle to enable/disable periodic update checks (manual checks still work when periodic checks are disabled).
-- Holding `Shift` while clicking a project's Update action runs an update check only (no image updates are applied).
+- Project Update actions are shown only when updates are available; holding `Shift` reveals a manual check (no image updates applied) even when none are available.
 - Service lists show image links for project (`org.opencontainers.image.url`/`rpm.project_url`), source (`org.opencontainers.image.source`/`rpm.source_url`), and docs (`org.opencontainers.image.documentation`/`rpm.documentation_url`).
-- Update icons indicate available image updates (manual checks still available).
+- Update icons indicate available image updates; the updates column shows a count of services with updates (for multi-service projects).
+- Service Update actions are shown only when that service has an update available and will pull/restart that service if it is running.
 - Service health is displayed when containers report a Docker health status; services without a health check show a warning icon.
 - Projects are marked **degraded** if any service reports **unhealthy** health status (projects still show **down** when all services are down).
 ## Web UI

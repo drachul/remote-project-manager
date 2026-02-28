@@ -1337,6 +1337,18 @@ def service_container(host: HostConfig, project: str, service: str) -> str:
         raise ComposeError("Service container name unavailable")
     return name
 
+
+def _service_is_running(items: List[dict], service: str) -> bool:
+    service_key = service.lower()
+    for item in items:
+        if (item.get("Service") or "").lower() != service_key:
+            continue
+        state = (item.get("State") or "").lower()
+        status = (item.get("Status") or "").lower()
+        if state == "running" or status.startswith("up"):
+            return True
+    return False
+
 def project_status(host: HostConfig, project: str) -> Tuple[str, List[dict], List[str]]:
     items = _docker_ps(host, project)
     if not items:
@@ -2198,6 +2210,20 @@ def apply_updates(host: HostConfig, project: str) -> Tuple[bool, str]:
     combined_output = "\n".join(outputs).strip()
     return updates_applied, combined_output
 
+
+def apply_service_updates(host: HostConfig, project: str, service: str) -> Tuple[bool, str]:
+    _, containers, _ = project_status(host, project)
+    was_running = _service_is_running(containers, service)
+    pull_result = _run_compose(host, project, ["pull", service])
+    pull_output = "\n".join([pull_result.stdout, pull_result.stderr]).strip()
+    updates_applied = _detect_updates(pull_output)
+    outputs = [pull_output]
+    if was_running:
+        up_result = _run_compose(host, project, ["up", "-d", service])
+        outputs.extend([up_result.stdout, up_result.stderr])
+    combined_output = "\n".join(outputs).strip()
+    return updates_applied, combined_output
+
 def apply_updates_cancelable(host: HostConfig, project: str, stop_event) -> Tuple[bool, str]:
     overall, _, _ = project_status(host, project)
     was_running = overall in ("up", "degraded")
@@ -2210,6 +2236,28 @@ def apply_updates_cancelable(host: HostConfig, project: str, stop_event) -> Tupl
     if was_running:
         up_result = _run_compose_cancelable(
             host, project, ["up", "-d"], stop_event, timeout=300
+        )
+        outputs.extend([up_result.stdout, up_result.stderr])
+    combined_output = "\n".join(outputs).strip()
+    return updates_applied, combined_output
+
+
+def apply_service_updates_cancelable(
+    host: HostConfig, project: str, service: str, stop_event
+) -> Tuple[bool, str]:
+    _, containers, _ = project_status(host, project)
+    was_running = _service_is_running(containers, service)
+    pull_result = _run_compose_cancelable(
+        host, project, ["pull", service], stop_event, timeout=300
+    )
+    pull_output = "\n".join([pull_result.stdout, pull_result.stderr]).strip()
+    updates_applied = _detect_updates(pull_output)
+    if stop_event.is_set():
+        raise ComposeCancelled("Update cancelled")
+    outputs = [pull_output]
+    if was_running:
+        up_result = _run_compose_cancelable(
+            host, project, ["up", "-d", service], stop_event, timeout=300
         )
         outputs.extend([up_result.stdout, up_result.stderr])
     combined_output = "\n".join(outputs).strip()

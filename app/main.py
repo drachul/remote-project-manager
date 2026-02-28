@@ -5034,7 +5034,7 @@ async def stream_service_action(
     host = _host(host_id)
     action = action.lower()
     logger.debug("Action service stream host_id=%s project=%s service=%s action=%s", host_id, project, service, action)
-    if action not in ("start", "stop", "restart", "hard_restart"):
+    if action not in ("start", "stop", "restart", "hard_restart", "update"):
         raise HTTPException(status_code=400, detail="Unsupported action")
     stop_event = await _register_service_action_control(
         host_id, project, service, action
@@ -5046,15 +5046,42 @@ async def stream_service_action(
             yield _sse_event(
                 "step", {"step": "running", "message": f"Running {action_label}"}
             )
-            await asyncio.to_thread(
-                compose.run_service_action_cancelable,
-                host,
-                project,
-                service,
-                action,
-                stop_event,
-            )
-            payload = {"message": f"{action_label} complete"}
+            if action == "update":
+                updates_applied, _ = await asyncio.to_thread(
+                    compose.apply_service_updates_cancelable,
+                    host,
+                    project,
+                    service,
+                    stop_event,
+                )
+                checked_at = _now()
+                project_id = _project_id(host_id, project)
+                async with app.state.state_lock:
+                    await asyncio.to_thread(
+                        _update_service_update_state,
+                        host_id,
+                        project_id,
+                        service,
+                        False,
+                        checked_at,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                message = "Updates applied" if updates_applied else "No updates available"
+                payload = {"message": message}
+            else:
+                await asyncio.to_thread(
+                    compose.run_service_action_cancelable,
+                    host,
+                    project,
+                    service,
+                    action,
+                    stop_event,
+                )
+                payload = {"message": f"{action_label} complete"}
             yield _sse_event("complete", payload)
         except compose.ComposeCancelled:
             yield _sse_event(
@@ -5079,7 +5106,7 @@ async def stop_service_action(
     _host(host_id)
     action = action.lower()
     logger.debug("Action service stop request host_id=%s project=%s service=%s action=%s", host_id, project, service, action)
-    if action not in ("start", "stop", "restart", "hard_restart"):
+    if action not in ("start", "stop", "restart", "hard_restart", "update"):
         raise HTTPException(status_code=400, detail="Unsupported action")
     stopped = await _request_service_action_stop(host_id, project, service, action)
     message = "Stop requested" if stopped else "No active action"

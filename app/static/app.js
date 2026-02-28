@@ -6223,7 +6223,12 @@ function renderProjectList() {
       }
       setActionRunning(updateBtn, updateRunning);
       updateBtn.classList.toggle("shift-update", shiftActive && state.updatesEnabled);
-      updateBtn.classList.toggle("hidden", !allowProjectActions);
+      const allowManualCheck = shiftActive && state.updatesEnabled;
+      updateBtn.classList.toggle(
+        "hidden",
+        !allowProjectActions ||
+          (entry.updatesAvailable !== true && !allowManualCheck)
+      );
     }
     if (backupBtn) {
       backupBtn.classList.add("action-ready");
@@ -6411,6 +6416,11 @@ function renderProjectList() {
           "Restart service",
           "restart"
         );
+        const updateBtn = createServiceActionButton(
+          "system_update_alt",
+          "Update service images",
+          "update"
+        );
 
         const showStart = startRunning || !serviceRunning;
         const showStop = stopRunning || serviceRunning;
@@ -6419,10 +6429,16 @@ function renderProjectList() {
         setActionRunning(startBtn, startRunning);
         setActionRunning(stopBtn, stopRunning);
         setActionRunning(restartBtn, restartRunning);
+        const updateRunning = serviceActions.has("update");
+        setActionRunning(updateBtn, updateRunning);
 
         startBtn.classList.toggle("hidden", !allowServiceActions || !showStart);
         stopBtn.classList.toggle("hidden", !allowServiceActions || !showStop);
         restartBtn.classList.toggle("hidden", !allowServiceActions || !showRestart);
+        updateBtn.classList.toggle(
+          "hidden",
+          !allowServiceActions || service.update_available !== true
+        );
 
         const shellBtn = document.createElement("button");
         shellBtn.className = "btn ghost service-action";
@@ -6459,6 +6475,7 @@ function renderProjectList() {
         actions.appendChild(startBtn);
         actions.appendChild(stopBtn);
         actions.appendChild(restartBtn);
+        actions.appendChild(updateBtn);
         if (serviceRunning) {
           actions.appendChild(shellBtn);
         }
@@ -7057,9 +7074,11 @@ async function runServiceAction(
     );
     completionMessage = result?.message || "Action complete";
     shouldRefresh = true;
-    const updatedStatus = resolvedAction === "stop" ? "down" : "up";
-    updateLocalServiceStatus(hostId, projectName, serviceName, updatedStatus);
-    renderProjectList();
+    if (["start", "stop", "restart", "hard_restart"].includes(resolvedAction)) {
+      const updatedStatus = resolvedAction === "stop" ? "down" : "up";
+      updateLocalServiceStatus(hostId, projectName, serviceName, updatedStatus);
+      renderProjectList();
+    }
     showToast(`${serviceName}: ${completionMessage}`);
   } catch (err) {
     alert(`Service action failed: ${err.message}`);
