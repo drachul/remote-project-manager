@@ -2317,6 +2317,42 @@ def _update_project_status_state(
         )
 
 
+def _recompute_project_state(host_id: str, project_id: str) -> None:
+    path = app.state.db_path
+    if not path:
+        return
+    _ensure_db(path)
+    with _open_db(path) as conn:
+        rows = conn.execute(
+            "SELECT status, update_available, refreshed_at, health_status FROM service_state "
+            "WHERE host_id = ? AND project_id = ?",
+            (host_id, project_id),
+        ).fetchall()
+        statuses = [row[0] for row in rows if row[0]]
+        updates_available = any(bool(row[1]) for row in rows)
+        refreshed_values = [_parse_timestamp(row[2]) for row in rows if row[2]]
+        project_refreshed = None
+        for value in refreshed_values:
+            if value and (project_refreshed is None or value > project_refreshed):
+                project_refreshed = value
+        overall_status = _derive_overall_status(statuses) if statuses else "unknown"
+        unhealthy = _has_unhealthy_health([row[3] for row in rows])
+        if unhealthy and overall_status != "down":
+            overall_status = "degraded"
+        conn.execute(
+            "UPDATE project_state SET overall_status = ?, updates_available = ?, "
+            "refreshed_at = COALESCE(?, refreshed_at) "
+            "WHERE host_id = ? AND id = ?",
+            (
+                overall_status,
+                1 if updates_available else 0,
+                project_refreshed.isoformat() if project_refreshed else None,
+                host_id,
+                project_id,
+            ),
+        )
+
+
 def _touch_project_status_refreshed(
     host_id: str, project_id: str, refreshed_at: datetime
 ) -> None:
@@ -2856,6 +2892,7 @@ async def _refresh_project_links(
             await asyncio.to_thread(
                 _sync_project_services, host_id, project_id, service_names
             )
+            await asyncio.to_thread(_recompute_project_state, host_id, project_id)
     if not service_images and not service_links:
         return
     existing_links = await asyncio.to_thread(
